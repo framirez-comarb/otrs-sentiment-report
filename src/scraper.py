@@ -3,13 +3,19 @@ OTRS Web Scraper
 ================
 Handles authentication, search, and ticket content extraction from OTRS 3.3.x
 via web scraping (no API access required).
+
+Key points:
+- Plain-text emails: inline in <div class="ArticleBody">
+- HTML emails: in <iframe> → fetch via AgentTicketAttachment;Subaction=HTMLView
+- Some articles only have image/PDF attachments → use ticket title as fallback
+- Binary detection on raw bytes to avoid returning garbage
 """
 
 import re
 import time
 import logging
 from datetime import datetime
-from urllib.parse import urljoin, urlencode, parse_qs, urlparse
+from urllib.parse import urljoin
 from html import unescape
 
 import requests
@@ -17,575 +23,551 @@ from bs4 import BeautifulSoup
 
 log = logging.getLogger(__name__)
 
-# Be polite with the server
-REQUEST_DELAY = 1.5  # seconds between requests
+REQUEST_DELAY = 1.0
+
+KNOWN_QUEUE_IDS = {
+    "SIFERE": "12", "SIFERE WEB": "35", "Módulo Consultas": "37",
+    "Módulo DDJJ": "36", "SIRCAR": "9", "SIRCREB": "7", "SIRCUPA": "82",
+    "SIRPEI": "18", "SIRTAC": "47", "SICOM": "15", "PADRON WEB": "27",
+    "ENCUESTAS": "48", "SUPERVISION": "103", "SIRCIP": "144",
+    "PORTAL FEDERAL TRIBUTARIO": "143",
+}
+
+# ── Binary content detection ──
+
+# Content-Type values that indicate binary (non-text) content
+BINARY_CONTENT_TYPES = [
+    "image/", "application/pdf", "application/octet-stream",
+    "application/zip", "application/vnd.", "application/x-",
+    "audio/", "video/",
+]
+
+# Magic bytes for common binary formats
+BINARY_MAGIC = [
+    b"%PDF",          # PDF
+    b"\x89PNG",       # PNG
+    b"\xff\xd8\xff",  # JPEG
+    b"GIF8",          # GIF
+    b"PK\x03\x04",   # ZIP/DOCX/XLSX/PPTX
+    b"PK\x05\x06",   # ZIP empty
+    b"RIFF",          # WAV/AVI
+    b"\x00\x00\x01\x00",  # ICO
+    b"\xd0\xcf\x11\xe0",  # MS Office old format
+    b"\x7fELF",       # ELF binary
+]
+
+
+def _is_binary_response(resp):
+    """Check if an HTTP response contains binary data (not useful text)."""
+    # Check Content-Type header
+    ct = resp.headers.get("Content-Type", "").lower()
+    for bt in BINARY_CONTENT_TYPES:
+        if bt in ct:
+            return True
+
+    # Check Content-Disposition (attachment with binary filename)
+    cd = resp.headers.get("Content-Disposition", "").lower()
+    if cd:
+        for ext in [".pdf", ".png", ".jpg", ".jpeg", ".gif", ".docx", ".xlsx", ".zip", ".doc"]:
+            if ext in cd:
+                return True
+
+    # Check raw bytes (first 20 bytes)
+    raw = resp.content[:20]
+    for magic in BINARY_MAGIC:
+        if raw.startswith(magic):
+            return True
+
+    # Check for high ratio of non-ASCII bytes (binary garbage)
+    sample = resp.content[:500]
+    if len(sample) > 50:
+        non_text = sum(1 for b in sample if b > 127 or (b < 32 and b not in (9, 10, 13)))
+        if non_text / len(sample) > 0.10:
+            return True
+
+    return False
+
+
+def _is_valid_text(text):
+    """Check if extracted text is actual useful email body."""
+    if not text or len(text.strip()) < 10:
+        return False
+    # Check for binary garbage that slipped through as string
+    if text.startswith("%PDF"):
+        return False
+    # Check for just embedded image references
+    clean = re.sub(r"\[cid:[^\]]+\]", "", text)
+    clean = re.sub(r"\[image:[^\]]*\]", "", clean).strip()
+    if len(clean) < 15:
+        return False
+    # Check for high non-printable characters
+    if len(text) > 50:
+        non_print = sum(1 for c in text[:300] if ord(c) > 127 or (ord(c) < 32 and c not in '\n\r\t'))
+        if non_print / min(len(text), 300) > 0.10:
+            return False
+    return True
 
 
 class OTRSScraper:
-    def __init__(self, base_url: str, username: str, password: str):
+    def __init__(self, base_url, username, password):
         self.base_url = base_url
         self.username = username
         self.password = password
         self.session = requests.Session()
-        self.session.verify = True  # Set to False if SSL cert issues
+        self.session.verify = True
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
         })
-        self._session_id = None
+        self._challenge_token = None
 
-    def login(self) -> bool:
-        """
-        Authenticate with OTRS. Handles two scenarios:
-        1. HTTP Basic Auth at the Apache level
-        2. OTRS form-based login
-        Returns True if successful.
-        """
+    # ── Authentication ──
+
+    def login(self):
         log.info(f"Logging into OTRS at {self.base_url}...")
-
-        # Attempt 1: HTTP Basic Auth (as shown in the browser dialog)
         self.session.auth = (self.username, self.password)
-
         try:
             resp = self.session.get(self.base_url, timeout=30, allow_redirects=True)
             resp.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except requests.exceptions.HTTPError:
             if resp.status_code == 401:
-                log.error("HTTP Basic Auth failed. Check credentials.")
+                log.error("HTTP Basic Auth failed.")
                 return False
             raise
 
-        # Check if we landed on the OTRS dashboard (already authenticated)
-        if "Action=AgentDashboard" in resp.url or "AgentDashboard" in resp.text:
-            log.info("Authenticated via HTTP Basic Auth → OTRS Dashboard reached.")
-            self._extract_session_id(resp)
+        if "AgentDashboard" in resp.url or "AgentDashboard" in resp.text:
+            log.info("Authenticated → Dashboard reached.")
+            self._extract_challenge_token(resp.text)
             return True
-
-        # Check if OTRS shows its own login form (need form-based login too)
-        soup = BeautifulSoup(resp.text, "html.parser")
-        login_form = soup.find("form", {"id": "Login"}) or soup.find(
-            "input", {"name": "Action", "value": "Login"}
-        )
-
-        if login_form:
-            log.info("OTRS form login detected. Submitting credentials...")
+        if "Action=Login" in resp.text or 'id="Login"' in resp.text:
             return self._form_login(resp)
-
-        # Check if we're somehow already on a valid OTRS page
-        if "Action=" in resp.url or "index.pl" in resp.url:
-            log.info("Appears to be authenticated. Proceeding.")
-            self._extract_session_id(resp)
-            return True
-
-        log.error(f"Unexpected response. URL: {resp.url}, Status: {resp.status_code}")
-        log.debug(f"Response snippet: {resp.text[:500]}")
         return False
 
-    def _form_login(self, initial_resp: requests.Response) -> bool:
-        """Handle OTRS form-based login."""
+    def _form_login(self, initial_resp):
         soup = BeautifulSoup(initial_resp.text, "html.parser")
-
-        # Find the login form action URL
-        form = soup.find("form", {"id": "Login"})
-        if not form:
-            form = soup.find("form")
-
-        action_url = self.base_url
-
-        # Build login payload
-        login_data = {
-            "Action": "Login",
-            "RequestedURL": "",
-            "Lang": "es",
-            "TimeOffset": "180",  # UTC-3 Argentina
-            "User": self.username,
-            "Password": self.password,
-        }
-
-        # Also grab any hidden fields
+        data = {"Action": "Login", "RequestedURL": "", "Lang": "es",
+                "TimeOffset": "180", "User": self.username, "Password": self.password}
+        form = soup.find("form", {"id": "Login"}) or soup.find("form")
         if form:
-            for hidden in form.find_all("input", {"type": "hidden"}):
-                name = hidden.get("name")
-                value = hidden.get("value", "")
-                if name and name not in login_data:
-                    login_data[name] = value
-
-        resp = self.session.post(action_url, data=login_data, timeout=30, allow_redirects=True)
-
-        if "Action=AgentDashboard" in resp.url or "AgentDashboard" in resp.text:
-            log.info("Form login successful.")
-            self._extract_session_id(resp)
+            for h in form.find_all("input", {"type": "hidden"}):
+                n = h.get("name")
+                if n and n not in data:
+                    data[n] = h.get("value", "")
+        resp = self.session.post(self.base_url, data=data, timeout=30, allow_redirects=True)
+        if "AgentDashboard" in resp.url or "AgentDashboard" in resp.text:
+            self._extract_challenge_token(resp.text)
             return True
+        return False
 
-        if "Login failed" in resp.text or "LoginFailed" in resp.text:
-            log.error("OTRS form login failed. Invalid credentials.")
-            return False
+    def _extract_challenge_token(self, html):
+        m = re.search(r'ChallengeToken["\s:]+["\']([^"\']+)', html)
+        if not m:
+            m = re.search(r'name="ChallengeToken"\s+value="([^"]+)"', html)
+        if m:
+            self._challenge_token = m.group(1)
+            log.info(f"ChallengeToken: {self._challenge_token[:8]}...")
 
-        # Might have redirected somewhere valid
-        self._extract_session_id(resp)
-        return "index.pl" in resp.url
+    # ── HTTP helpers ──
 
-    def _extract_session_id(self, resp: requests.Response):
-        """Extract the OTRS session ID from URL or cookies."""
-        # From URL parameter
-        parsed = urlparse(resp.url)
-        qs = parse_qs(parsed.query)
-        if "SessionID" in qs:
-            self._session_id = qs["SessionID"][0]
-        # Also check cookies
-        for cookie in self.session.cookies:
-            if "Session" in cookie.name or "OTRS" in cookie.name:
-                self._session_id = cookie.value
-                break
-
-    def _build_url(self, **params) -> str:
-        """Build an OTRS URL with the given parameters."""
-        url = self.base_url + "?" + urlencode(params, doseq=True)
-        return url
-
-    def _get(self, url: str) -> requests.Response:
-        """Make a GET request with rate limiting."""
+    def _get(self, url):
         time.sleep(REQUEST_DELAY)
         resp = self.session.get(url, timeout=60, allow_redirects=True)
         resp.raise_for_status()
         return resp
 
-    def _post(self, url: str, data: dict) -> requests.Response:
-        """Make a POST request with rate limiting."""
+    def _post(self, url, data):
         time.sleep(REQUEST_DELAY)
         resp = self.session.post(url, data=data, timeout=60, allow_redirects=True)
         resp.raise_for_status()
         return resp
 
-    def search_tickets(
-        self,
-        fulltext: str,
-        queues: list[str],
-        date_from: str,
-        date_to: str,
-    ) -> list[dict]:
-        """
-        Search for tickets matching the given criteria.
-        Returns a list of dicts with ticket_id, ticket_number, title, etc.
-        """
-        log.info("Fetching search form to discover queue IDs...")
+    def _get_text_or_none(self, url):
+        """GET a URL, return response only if it contains text (not binary)."""
+        resp = self._get(url)
+        if _is_binary_response(resp):
+            log.debug(f"    Binary response from {url.split('?')[1][:60]}")
+            return None
+        return resp
 
-        # First, load the search form to get queue IDs
-        search_form_url = self._build_url(Action="AgentTicketSearch")
-        resp = self._get(search_form_url)
-        soup = BeautifulSoup(resp.text, "html.parser")
+    # ── Ticket Search ──
 
-        # Find queue select and map names to IDs
-        queue_select = soup.find("select", {"name": "QueueIDs"}) or soup.find(
-            "select", {"id": "QueueIDs"}
-        )
-
-        queue_id_map = {}
-        if queue_select:
-            for option in queue_select.find_all("option"):
-                qid = option.get("value", "")
-                qname = option.text.strip().lstrip("\xa0").strip()
-                # Clean OTRS indentation (uses &nbsp; or spaces for hierarchy)
-                clean_name = re.sub(r"^[\s\xa0|\\-]+", "", qname).strip()
-                if qid and clean_name:
-                    queue_id_map[clean_name] = qid
-                    # Also store with parent path stripped
-                    if "::" in clean_name:
-                        short_name = clean_name.split("::")[-1].strip()
-                        queue_id_map[short_name] = qid
-
-        log.info(f"Found {len(queue_id_map)} queues in OTRS.")
-        log.debug(f"Queue map: {queue_id_map}")
-
-        # Map requested queue names to IDs
+    def search_tickets(self, fulltext, queues, date_from, date_to):
         selected_queue_ids = []
         for q in queues:
-            q_clean = q.strip()
-            if q_clean in queue_id_map:
-                selected_queue_ids.append(queue_id_map[q_clean])
-                log.info(f"  Queue '{q_clean}' → ID {queue_id_map[q_clean]}")
+            q = q.strip()
+            if q in KNOWN_QUEUE_IDS:
+                selected_queue_ids.append(KNOWN_QUEUE_IDS[q])
+                log.info(f"  Queue '{q}' → ID {KNOWN_QUEUE_IDS[q]}")
             else:
-                # Fuzzy match
-                matched = False
-                for name, qid in queue_id_map.items():
-                    if q_clean.lower() in name.lower() or name.lower() in q_clean.lower():
+                for name, qid in KNOWN_QUEUE_IDS.items():
+                    if q.lower() in name.lower() or name.lower() in q.lower():
                         selected_queue_ids.append(qid)
-                        log.info(f"  Queue '{q_clean}' ~ '{name}' → ID {qid}")
-                        matched = True
+                        log.info(f"  Queue '{q}' ~ '{name}' → ID {qid}")
                         break
-                if not matched:
-                    log.warning(f"  Queue '{q_clean}' not found in OTRS. Skipping.")
+                else:
+                    log.warning(f"  Queue '{q}' not found.")
 
-        if not selected_queue_ids:
-            log.warning("No valid queue IDs found. Searching without queue filter.")
-
-        # Parse dates
         df = datetime.strptime(date_from, "%Y-%m-%d")
         dt = datetime.strptime(date_to, "%Y-%m-%d")
 
-        # Build search request
-        search_params = {
-            "Action": "AgentTicketSearch",
-            "Subaction": "Search",
-            "Fulltext": fulltext,
-            "TicketCreateTimeNewerDate": f"{df.day:02d}/{df.month:02d}/{df.year}",
-            "TicketCreateTimeOlderDate": f"{dt.day:02d}/{dt.month:02d}/{dt.year}",
-            "ResultForm": "Normal",
-            "QueueIDs": selected_queue_ids,
-        }
+        search_data = [
+            ("Action", "AgentTicketSearch"), ("Subaction", "Search"),
+            ("EmptySearch", ""),
+            ("ShownAttributes", "LabelFulltext,LabelQueueIDs,LabelTicketCreateTimeSlot"),
+            ("Fulltext", fulltext), ("TimeSearchType", "TimeSlot"),
+            ("TicketCreateTimeStartDay", str(df.day)),
+            ("TicketCreateTimeStartMonth", str(df.month)),
+            ("TicketCreateTimeStartYear", str(df.year)),
+            ("TicketCreateTimeStopDay", str(dt.day)),
+            ("TicketCreateTimeStopMonth", str(dt.month)),
+            ("TicketCreateTimeStopYear", str(dt.year)),
+            ("ResultForm", "Normal"),
+        ]
+        for qid in selected_queue_ids:
+            search_data.append(("QueueIDs", qid))
+        if self._challenge_token:
+            search_data.append(("ChallengeToken", self._challenge_token))
 
-        # Also try the OTRS 3.3 date format (individual fields)
-        search_data = {
-            "Action": "AgentTicketSearch",
-            "Subaction": "Search",
-            "Fulltext": fulltext,
-            "QueueIDs": selected_queue_ids,
-            "TicketCreateTimeStartDay": str(df.day),
-            "TicketCreateTimeStartMonth": str(df.month),
-            "TicketCreateTimeStartYear": str(df.year),
-            "TicketCreateTimeStopDay": str(dt.day),
-            "TicketCreateTimeStopMonth": str(dt.month),
-            "TicketCreateTimeStopYear": str(dt.year),
-            "TicketCreateTimePointStart": "Last",
-            "ResultForm": "Normal",
-        }
+        log.info(f"Searching: fulltext='{fulltext}', queues={selected_queue_ids}, "
+                 f"dates={date_from}→{date_to}")
 
-        log.info("Executing search...")
         resp = self._post(self.base_url, data=search_data)
-
-        # Parse search results
         tickets = self._parse_search_results(resp)
+        log.info(f"Page 1: {len(tickets)} tickets")
 
-        # Handle pagination — OTRS 3.3 shows 50 results per page by default
         page = 1
         while True:
-            # Check for "next page" link
             soup = BeautifulSoup(resp.text, "html.parser")
-            next_link = soup.find("a", string=re.compile(r"(Siguiente|Next|>>)"))
-            if not next_link:
-                # Also try numbered page links
-                page_links = soup.find_all("a", {"class": re.compile(r"page|Page")})
-                next_page = None
-                for pl in page_links:
-                    href = pl.get("href", "")
-                    if f"StartHit=" in href:
-                        try:
-                            hit = int(re.search(r"StartHit=(\d+)", href).group(1))
-                            if hit > page * 50:
-                                next_page = pl
-                                break
-                        except (AttributeError, ValueError):
-                            pass
-                if not next_page:
-                    break
-                next_link = next_page
-
-            href = next_link.get("href", "")
-            if not href:
+            next_url = self._find_next_page(soup, page)
+            if not next_url:
                 break
-
             page += 1
-            log.info(f"Fetching page {page}...")
-            if href.startswith("http"):
-                next_url = href
-            else:
-                next_url = urljoin(self.base_url, href)
-
             resp = self._get(next_url)
-            more_tickets = self._parse_search_results(resp)
-            if not more_tickets:
+            more = self._parse_search_results(resp)
+            if not more:
                 break
-            tickets.extend(more_tickets)
+            tickets.extend(more)
+            log.info(f"Page {page}: +{len(more)} (total: {len(tickets)})")
 
-        log.info(f"Total tickets found: {len(tickets)}")
+        log.info(f"Total tickets: {len(tickets)}")
         return tickets
 
-    def _parse_search_results(self, resp: requests.Response) -> list[dict]:
-        """Parse the ticket search results page and extract ticket info."""
+    def _find_next_page(self, soup, current_page):
+        links = soup.find_all("a", href=re.compile(r"StartHit="))
+        if not links:
+            return None
+        for link in sorted(links, key=lambda l: int(re.search(r"StartHit=(\d+)", l["href"]).group(1))):
+            hit = int(re.search(r"StartHit=(\d+)", link["href"]).group(1))
+            if hit > current_page * 35:
+                href = link["href"]
+                return href if href.startswith("http") else urljoin(self.base_url, href)
+        return None
+
+    def _parse_search_results(self, resp):
         tickets = []
         soup = BeautifulSoup(resp.text, "html.parser")
-
-        # OTRS 3.3 renders results in a table with class "Overview" or "TableSmall"
-        table = soup.find("table", {"class": re.compile(r"Overview|TableSmall|DataTable")})
-        if not table:
-            # Try finding ticket links directly
-            ticket_links = soup.find_all("a", href=re.compile(r"Action=AgentTicketZoom"))
-            for link in ticket_links:
-                href = link.get("href", "")
-                ticket_id_match = re.search(r"TicketID=(\d+)", href)
-                if ticket_id_match:
-                    ticket_id = ticket_id_match.group(1)
-                    tickets.append({
-                        "ticket_id": ticket_id,
-                        "ticket_number": link.text.strip(),
-                        "title": "",
-                        "url": urljoin(self.base_url, href),
-                    })
-            return tickets
-
-        rows = table.find_all("tr")
-        for row in rows:
-            cells = row.find_all("td")
-            if len(cells) < 2:
-                continue
-
-            # Find the ticket link
-            link = row.find("a", href=re.compile(r"Action=AgentTicketZoom"))
+        for item in soup.find_all("li", id=re.compile(r"TicketID_\d+")):
+            tid = re.search(r"TicketID_(\d+)", item["id"]).group(1)
+            link = item.find("a", class_="MasterActionLink")
             if not link:
                 continue
-
             href = link.get("href", "")
-            ticket_id_match = re.search(r"TicketID=(\d+)", href)
-            if not ticket_id_match:
-                continue
+            text = link.text.strip()
+            tn, title = "", text
+            m = re.match(r"Ticket#:\s*(\d+)\s*[–—\-]\s*(.*)", text)
+            if m:
+                tn, title = m.group(1), m.group(2).strip()
 
-            ticket_id = ticket_id_match.group(1)
-            ticket_number = link.text.strip()
-
-            # Try to get the title from the row
-            title = ""
-            title_cell = row.find("td", {"class": re.compile(r"Title|Subject")})
-            if title_cell:
-                title = title_cell.text.strip()
-            else:
-                # Title is often in the last or second-to-last cell
-                for cell in cells:
-                    text = cell.text.strip()
-                    if len(text) > 20 and text != ticket_number:
-                        title = text
-                        break
-
-            # Try to get the queue
-            queue = ""
-            queue_cell = row.find("td", {"class": re.compile(r"Queue")})
-            if queue_cell:
-                queue = queue_cell.text.strip()
-
-            # Try to get creation date
-            created = ""
-            date_cell = row.find("td", {"class": re.compile(r"Age|Created|Time")})
-            if date_cell:
-                created = date_cell.text.strip()
+            queue, created = "", ""
+            ql = item.find("label", string=re.compile(r"Cola"))
+            if ql:
+                qd = ql.find_next_sibling("div")
+                if qd:
+                    queue = qd.get("title", "") or qd.text.strip()
+            cl = item.find("label", string=re.compile(r"Creado"))
+            if cl and cl.next_sibling:
+                created = str(cl.next_sibling).strip()
 
             tickets.append({
-                "ticket_id": ticket_id,
-                "ticket_number": ticket_number,
-                "title": title,
-                "queue": queue,
-                "created": created,
-                "url": urljoin(self.base_url, href),
+                "ticket_id": tid, "ticket_number": tn, "title": title,
+                "queue": queue, "created": created,
+                "url": urljoin(self.base_url, href) if href else "",
             })
-
         return tickets
 
-    def fetch_first_articles(self, tickets: list[dict]) -> list[dict]:
-        """
-        For each ticket, fetch the detail page and extract the first article
-        (the original email/message).
-        """
+    # ══════════════════════════════════════════════════════════════
+    #  Article Extraction
+    # ══════════════════════════════════════════════════════════════
+
+    def fetch_first_articles(self, tickets):
         results = []
         total = len(tickets)
-
         for i, ticket in enumerate(tickets, 1):
-            log.info(f"  [{i}/{total}] Ticket {ticket.get('ticket_number', ticket['ticket_id'])}...")
-
+            tn = ticket.get("ticket_number") or ticket["ticket_id"]
+            log.info(f"  [{i}/{total}] Ticket {tn}...")
             try:
-                content = self._fetch_ticket_first_article(ticket["ticket_id"])
-                if content:
-                    ticket["first_article_body"] = content["body"]
-                    ticket["first_article_from"] = content.get("from", "")
-                    ticket["first_article_subject"] = content.get("subject", "")
-                    ticket["first_article_date"] = content.get("date", "")
-                    results.append(ticket)
+                content = self._fetch_ticket_first_article(ticket["ticket_id"], ticket.get("title", ""))
+                ticket.update({
+                    "first_article_body": content.get("body", ""),
+                    "first_article_from": content.get("from", ""),
+                    "first_article_subject": content.get("subject", ""),
+                    "first_article_date": content.get("date", ""),
+                })
+                body = ticket["first_article_body"]
+                if body:
+                    preview = body[:80].replace("\n", " ")
+                    log.info(f"    OK ({len(body)} chars): {preview}...")
                 else:
-                    log.warning(f"    No article content found for ticket {ticket['ticket_id']}")
-                    ticket["first_article_body"] = ""
-                    results.append(ticket)
+                    log.warning(f"    No text content for ticket {ticket['ticket_id']}")
             except Exception as e:
-                log.error(f"    Error fetching ticket {ticket['ticket_id']}: {e}")
+                log.error(f"    Error: {e}")
                 ticket["first_article_body"] = ""
-                results.append(ticket)
-
+            results.append(ticket)
         return results
 
-    def _fetch_ticket_first_article(self, ticket_id: str) -> dict | None:
-        """Fetch the first article of a specific ticket."""
-        url = self._build_url(Action="AgentTicketZoom", TicketID=ticket_id)
+    def _fetch_ticket_first_article(self, ticket_id, ticket_title=""):
+        """
+        Fetch the first article text using multiple strategies.
+        If the article only contains binary (image/PDF), falls back to ticket title.
+        """
+        result = {"body": "", "from": "", "subject": "", "date": ""}
+
+        # Step 1: Load ticket zoom → find first ArticleID
+        url = f"{self.base_url}?Action=AgentTicketZoom;TicketID={ticket_id}"
         resp = self._get(url)
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # OTRS 3.3 shows articles in the ticket zoom view
-        # The first article is typically the first one in the list
+        first_article_id = self._find_first_article_id(soup)
+        if not first_article_id:
+            return result
 
-        # Method 1: Find article bodies directly
-        # In OTRS 3.3, article content may be in iframes or inline
-        article_bodies = soup.find_all(
-            "div", {"class": re.compile(r"ArticleBody|ArticleMailContent|MessageBody")}
+        # Step 2: Load page with first article active
+        url2 = f"{self.base_url}?Action=AgentTicketZoom;TicketID={ticket_id};ArticleID={first_article_id}"
+        resp2 = self._get(url2)
+        soup2 = BeautifulSoup(resp2.text, "html.parser")
+        meta = self._extract_article_meta(soup2)
+
+        # Step 3a: Try inline ArticleBody (plain text emails)
+        body = self._extract_inline_body(soup2)
+        if _is_valid_text(body):
+            return {"body": body, **meta}
+
+        # Step 3b: Check if there's an iframe (HTML emails)
+        has_iframe = bool(
+            soup2.find("iframe", id=f"Iframe{first_article_id}") or
+            (soup2.find("div", class_="ArticleMailContent") or BeautifulSoup("", "html.parser")).find("iframe")
         )
 
-        if article_bodies:
-            first_body = article_bodies[0]
-            body_text = self._clean_html_to_text(first_body)
+        if has_iframe:
+            # Try HTMLView — this fetches the HTML email body
+            for file_id in [1, 2, 3]:
+                body = self._fetch_html_view(ticket_id, first_article_id, file_id)
+                if _is_valid_text(body):
+                    return {"body": body, **meta}
 
-            # Try to get metadata from the article header
-            meta = self._extract_article_meta(soup, 0)
-            return {
-                "body": body_text,
-                "from": meta.get("from", ""),
-                "subject": meta.get("subject", ""),
-                "date": meta.get("date", ""),
-            }
+        # Step 4: Try direct attachment downloads (text/html or text/plain)
+        for file_id in [1, 2, 3]:
+            body = self._fetch_attachment_text(ticket_id, first_article_id, file_id)
+            if _is_valid_text(body):
+                return {"body": body, **meta}
 
-        # Method 2: Articles might be loaded via AJAX — fetch the first article directly
-        # In OTRS 3.3, article content can be fetched via:
-        # Action=AgentTicketArticleContent;TicketID=X;ArticleID=Y
-        article_links = soup.find_all(
-            "a", href=re.compile(r"Action=AgentTicket(Zoom|Article).*ArticleID=")
-        )
+        # Step 5: Try AgentTicketPlain (raw email source)
+        body = self._fetch_plain_article(ticket_id, first_article_id)
+        if _is_valid_text(body):
+            return {"body": body, **meta}
 
-        if not article_links:
-            # Try finding article IDs in the page
-            article_ids = re.findall(r"ArticleID[=:][\s]*['\"]?(\d+)", resp.text)
-            if article_ids:
-                first_article_id = article_ids[0]
-                return self._fetch_article_content(ticket_id, first_article_id)
-            return None
+        # Step 6: ZoomExpand=1 — show all articles expanded
+        body = self._try_zoom_expand(ticket_id, first_article_id)
+        if _is_valid_text(body):
+            return {"body": body, **meta}
 
-        # Get the first article link
-        first_link = article_links[0]
-        href = first_link.get("href", "")
-        article_id_match = re.search(r"ArticleID=(\d+)", href)
+        # Step 7: Fallback — use ticket title (the subject often contains the complaint)
+        # This handles tickets where the user only sent an image/PDF with no text body
+        if ticket_title and len(ticket_title) > 10:
+            # Strip "SUMA BOT - SIFERE - CUIT - " prefix if present
+            clean_title = re.sub(r"^SUMA BOT\s*-\s*SIFERE\s*-\s*\d+\s*-\s*", "", ticket_title).strip()
+            if clean_title and len(clean_title) > 10:
+                log.info(f"    Using ticket title as fallback: {clean_title[:60]}...")
+                return {"body": clean_title, **meta}
 
-        if article_id_match:
-            article_id = article_id_match.group(1)
-            return self._fetch_article_content(ticket_id, article_id)
+        log.warning(f"    Ticket {ticket_id}: only binary content, no text extractable")
+        return result
 
-        return None
-
-    def _fetch_article_content(self, ticket_id: str, article_id: str) -> dict:
-        """Fetch a specific article's content."""
-        # Try the plain text view first
-        url = self._build_url(
-            Action="AgentTicketPlain",
-            TicketID=ticket_id,
-            ArticleID=article_id,
-        )
+    def _fetch_html_view(self, ticket_id, article_id, file_id):
+        """Fetch HTML email body via OTRS HTMLView endpoint."""
+        url = (f"{self.base_url}?Action=AgentTicketAttachment;"
+               f"Subaction=HTMLView;TicketID={ticket_id};"
+               f"ArticleID={article_id};FileID={file_id}")
         try:
-            resp = self._get(url)
-            soup = BeautifulSoup(resp.text, "html.parser")
-            plain_content = soup.find("pre") or soup.find(
-                "div", {"class": re.compile(r"Plain|Content")}
-            )
-            if plain_content:
-                text = plain_content.text.strip()
-                if len(text) > 20:
-                    return {"body": text, "from": "", "subject": "", "date": ""}
+            resp = self._get_text_or_none(url)
+            if resp is None:
+                return ""
+            if len(resp.text) > 50:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                return self._clean_html_to_text(soup.find("body") or soup)
         except Exception:
             pass
+        return ""
 
-        # Fallback: try the article zoom view
-        url = self._build_url(
-            Action="AgentTicketZoom",
-            Subaction="ArticleUpdate",
-            TicketID=ticket_id,
-            ArticleID=article_id,
-        )
+    def _fetch_attachment_text(self, ticket_id, article_id, file_id):
+        """Download attachment and return text content if it's text."""
+        url = (f"{self.base_url}?Action=AgentTicketAttachment;"
+               f"TicketID={ticket_id};ArticleID={article_id};FileID={file_id}")
+        try:
+            resp = self._get_text_or_none(url)
+            if resp is None:
+                return ""
+            ct = resp.headers.get("Content-Type", "").lower()
+            if "text/html" in ct:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                return self._clean_html_to_text(soup.find("body") or soup)
+            elif "text/plain" in ct:
+                return resp.text.strip()
+        except Exception:
+            pass
+        return ""
+
+    def _fetch_plain_article(self, ticket_id, article_id):
+        """Fetch raw email via AgentTicketPlain."""
+        url = (f"{self.base_url}?Action=AgentTicketPlain;"
+               f"TicketID={ticket_id};ArticleID={article_id}")
         try:
             resp = self._get(url)
-
-            # Response might be JSON with HTML content
-            try:
-                data = resp.json()
-                if isinstance(data, dict) and "Data" in data:
-                    html_content = data["Data"]
-                    soup = BeautifulSoup(html_content, "html.parser")
-                    return {
-                        "body": self._clean_html_to_text(soup),
-                        "from": "",
-                        "subject": "",
-                        "date": "",
-                    }
-            except (ValueError, KeyError):
-                pass
-
-            # Plain HTML response
             soup = BeautifulSoup(resp.text, "html.parser")
-            body_div = soup.find(
-                "div", {"class": re.compile(r"ArticleBody|MessageBody|ArticleContent")}
-            )
-            if body_div:
-                return {
-                    "body": self._clean_html_to_text(body_div),
-                    "from": "",
-                    "subject": "",
-                    "date": "",
-                }
+            pre = soup.find("pre")
+            if pre:
+                raw = pre.text.strip()
+                if len(raw) > 50:
+                    return self._extract_body_from_raw_email(raw)
+        except Exception:
+            pass
+        return ""
 
-            # Last resort: get all text
-            text = soup.get_text(separator="\n", strip=True)
-            if len(text) > 50:
-                return {"body": text[:5000], "from": "", "subject": "", "date": ""}
-        except Exception as e:
-            log.debug(f"Error fetching article {article_id}: {e}")
+    def _try_zoom_expand(self, ticket_id, target_article_id):
+        """Load ticket with all articles expanded, find first text body."""
+        url = f"{self.base_url}?Action=AgentTicketZoom;TicketID={ticket_id};ZoomExpand=1"
+        try:
+            resp = self._get(url)
+            soup = BeautifulSoup(resp.text, "html.parser")
 
-        return {"body": "", "from": "", "subject": "", "date": ""}
+            # Check inline bodies
+            for div in soup.find_all("div", class_="ArticleBody"):
+                text = self._clean_html_to_text(div)
+                if _is_valid_text(text):
+                    return text
 
-    def _extract_article_meta(self, soup: BeautifulSoup, index: int) -> dict:
-        """Extract metadata (from, subject, date) of an article."""
-        meta = {}
+            # Check iframes — try HTMLView for the target article
+            for iframe in soup.find_all("iframe", id=re.compile(r"Iframe\d+")):
+                m = re.search(r"Iframe(\d+)", iframe.get("id", ""))
+                if m:
+                    aid = m.group(1)
+                    for fid in [1, 2]:
+                        body = self._fetch_html_view(ticket_id, aid, fid)
+                        if _is_valid_text(body):
+                            return body
+        except Exception:
+            pass
+        return ""
 
-        # Look for article header info
-        headers = soup.find_all(
-            "div", {"class": re.compile(r"ArticleHeader|MessageHeader")}
-        )
-        if index < len(headers):
-            header = headers[index]
+    # ── Helpers ──
 
-            from_elem = header.find(string=re.compile(r"(De|From):"))
-            if from_elem:
-                parent = from_elem.parent
-                meta["from"] = parent.text.replace("De:", "").replace("From:", "").strip()
+    def _find_first_article_id(self, soup):
+        row1 = soup.find("tr", id="Row1")
+        if row1:
+            aid = row1.find("input", class_="ArticleID")
+            if aid and aid.get("value"):
+                return aid["value"]
+        link1 = soup.find("input", {"name": "Link1", "class": "ArticleInfo"})
+        if link1:
+            m = re.search(r"ArticleID=(\d+)", link1.get("value", ""))
+            if m:
+                return m.group(1)
+        aid = soup.find("input", class_="ArticleID")
+        return aid["value"] if aid and aid.get("value") else None
 
-            subject_elem = header.find(string=re.compile(r"(Asunto|Subject):"))
-            if subject_elem:
-                parent = subject_elem.parent
-                meta["subject"] = (
-                    parent.text.replace("Asunto:", "").replace("Subject:", "").strip()
-                )
+    def _extract_inline_body(self, soup):
+        div = soup.find("div", class_="ArticleBody")
+        if div:
+            return self._clean_html_to_text(div)
+        return ""
 
-            date_elem = header.find(string=re.compile(r"(Fecha|Date):"))
-            if date_elem:
-                parent = date_elem.parent
-                meta["date"] = (
-                    parent.text.replace("Fecha:", "").replace("Date:", "").strip()
-                )
-
+    def _extract_article_meta(self, soup):
+        meta = {"from": "", "subject": "", "date": ""}
+        header = soup.find("div", class_="ArticleMailHeader")
+        if header:
+            for label_text, key in [("De:", "from"), ("Asunto:", "subject")]:
+                label = header.find("label", string=re.compile(label_text))
+                if label:
+                    val = label.find_next_sibling("p", class_="Value")
+                    if val:
+                        meta[key] = val.get("title", "") or val.text.strip()
+        headers = soup.find_all("div", class_="LightRow Header")
+        if headers:
+            dd = headers[0].find("div", class_="AdditionalInformation")
+            if dd:
+                m = re.search(r"Creado:\s*(.+?)(?:\s*$|\n)", dd.text.strip())
+                if m:
+                    meta["date"] = m.group(1).strip()
         return meta
 
-    def _clean_html_to_text(self, element) -> str:
-        """Convert an HTML element to clean plain text."""
+    def _extract_body_from_raw_email(self, raw):
+        parts = re.split(r"\n\s*\n", raw, maxsplit=1)
+        if len(parts) < 2:
+            return raw.strip()
+        body = parts[1].strip()
+        if "Content-Type:" in body:
+            chunks = re.split(r"--[\w=.-]+", body)
+            for chunk in chunks:
+                if "Content-Type: text/plain" in chunk:
+                    sub = re.split(r"\n\s*\n", chunk, maxsplit=1)
+                    if len(sub) > 1 and _is_valid_text(sub[1].strip()):
+                        return sub[1].strip()
+            for chunk in chunks:
+                if "Content-Type: text/html" in chunk:
+                    sub = re.split(r"\n\s*\n", chunk, maxsplit=1)
+                    if len(sub) > 1:
+                        soup = BeautifulSoup(sub[1], "html.parser")
+                        text = self._clean_html_to_text(soup)
+                        if _is_valid_text(text):
+                            return text
+        if _is_valid_text(body):
+            return body
+        return ""
+
+    def _clean_html_to_text(self, element):
         if element is None:
             return ""
-
-        # Remove script and style elements
-        for tag in element.find_all(["script", "style"]):
+        for tag in element.find_all(["script", "style", "head"]):
             tag.decompose()
-
-        # Get text
-        text = element.get_text(separator="\n", strip=True)
-
-        # Clean up
+        for cf in element.find_all(["span", "a"], class_="__cf_email__"):
+            decoded = self._decode_cf_email(cf.get("data-cfemail", ""))
+            if decoded:
+                cf.replace_with(decoded)
+        for br in element.find_all("br"):
+            br.replace_with("\n")
+        for p in element.find_all("p"):
+            p.insert_after("\n")
+        text = element.get_text(separator=" ", strip=False)
         text = unescape(text)
-        # Remove excessive whitespace
         text = re.sub(r"\n{3,}", "\n\n", text)
         text = re.sub(r"[ \t]+", " ", text)
-
+        text = re.sub(r" *\n *", "\n", text)
         return text.strip()
 
-    def close(self):
-        """Close the session."""
+    @staticmethod
+    def _decode_cf_email(encoded):
+        if not encoded or len(encoded) < 4:
+            return ""
         try:
-            # Try to logout cleanly
-            self._get(self._build_url(Action="Logout"))
+            b = bytes.fromhex(encoded)
+            return "".join(chr(c ^ b[0]) for c in b[1:])
+        except (ValueError, IndexError):
+            return "[email]"
+
+    def close(self):
+        try:
+            if self._challenge_token:
+                self._get(f"{self.base_url}?Action=Logout;ChallengeToken={self._challenge_token}")
         except Exception:
             pass
         self.session.close()
+        log.info("Session closed.")

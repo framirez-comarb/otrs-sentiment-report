@@ -39,7 +39,7 @@ def main():
     search_fulltext = os.environ.get("SEARCH_FULLTEXT", "incógnito")
     search_queues = os.environ.get("SEARCH_QUEUES", "SIFERE,Módulo Consultas,Módulo DDJJ")
     search_queues = [q.strip() for q in search_queues.split(",")]
-    date_from = os.environ.get("DATE_FROM", "2025-01-01")
+    date_from = os.environ.get("DATE_FROM", "2026-01-01")
     date_to = os.environ.get("DATE_TO", datetime.now().strftime("%Y-%m-%d"))
 
     log.info("=" * 60)
@@ -88,7 +88,14 @@ def main():
 
     # ── Step 3: Word Cloud ──
     log.info("Step 3: Generating word cloud...")
-    wordcloud_b64 = analyzer.generate_wordcloud(analyzed_tickets)
+    wordcloud_result = analyzer.generate_wordcloud(analyzed_tickets)
+    wordcloud_b64 = wordcloud_result["image_b64"]
+    top_bigrams = wordcloud_result["top_bigrams"]
+    top_trigrams = wordcloud_result["top_trigrams"]
+
+    # ── Step 3b: Timeline data ──
+    log.info("Step 3b: Computing timeline data...")
+    timeline_data = analyzer.get_timeline_data(analyzed_tickets)
 
     # ── Step 4: Generate Report ──
     log.info("Step 4: Generating HTML report...")
@@ -105,6 +112,9 @@ def main():
             "date_to": date_to,
         },
         generated_at=datetime.now(),
+        timeline_data=timeline_data,
+        top_bigrams=top_bigrams,
+        top_trigrams=top_trigrams,
     )
 
     # Write report to docs/ for GitHub Pages
