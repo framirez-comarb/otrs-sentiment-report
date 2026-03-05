@@ -51,7 +51,7 @@ jobs:
           OTRS_PASS: ${{ secrets.OTRS_PASS }}
           SEARCH_FULLTEXT: ${{ vars.SEARCH_FULLTEXT || 'incógnito' }}
           SEARCH_QUEUES: ${{ vars.SEARCH_QUEUES || 'SIFERE,Módulo Consultas,Módulo DDJJ' }}
-          DATE_FROM: ${{ vars.DATE_FROM || '2025-01-01' }}
+          DATE_FROM: ${{ vars.DATE_FROM || '2026-01-01' }}
         run: |
           python main.py
 
