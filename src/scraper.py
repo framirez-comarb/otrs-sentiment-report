@@ -272,7 +272,8 @@ class OTRSScraper:
 
     def _find_next_page(self, soup, visited_hits):
         """Find the next unvisited pagination link. Returns (url, start_hit) or (None, None)."""
-        links = soup.find_all("a", href=re.compile(r"StartHit="))
+        # Only match actual pagination links (id="AgentTicketSearchPageN")
+        links = soup.find_all("a", id=re.compile(r"AgentTicketSearchPage\d+"))
         if not links:
             return None, None
         # Sort by StartHit ascending and pick the first one we haven't visited
