@@ -1,13 +1,15 @@
 """
-Sentiment Analyzer
-==================
-Performs sentiment analysis on ticket text using pysentimiento (Spanish BERT),
-generates word clouds with bigrams/trigrams, and computes timeline data.
+Intent Classifier
+=================
+Classifies ticket text by intent (Consulta/Duda vs Reclamo/Error)
+using keyword/pattern matching, generates word clouds with bigrams/trigrams,
+and computes timeline data.
 """
 
 import re
 import base64
 import logging
+import unicodedata
 from io import BytesIO
 from collections import Counter
 from datetime import datetime
@@ -118,107 +120,156 @@ NGRAM_POISON_WORDS = {"deloitte", "dttl", "deloite", "member", "firm", "image", 
                       "provide", "separate", "refers", "related", "tmf",
                       "verein", "swiss", "audit", "advisory"}
 
+# ══════════════════════════════════════════════════════════════
+#  Intent classification keywords/patterns
+# ══════════════════════════════════════════════════════════════
 
-def _load_sentiment_model():
-    try:
-        from pysentimiento import create_analyzer
-        analyzer = create_analyzer(task="sentiment", lang="es")
-        log.info("Loaded pysentimiento sentiment model.")
-        return analyzer, "pysentimiento"
-    except ImportError:
-        log.warning("pysentimiento not available.")
-    try:
-        from transformers import pipeline
-        analyzer = pipeline(
-            "sentiment-analysis",
-            model="nlptown/bert-base-multilingual-uncased-sentiment",
-            truncation=True, max_length=512,
-        )
-        log.info("Loaded multilingual sentiment model.")
-        return analyzer, "transformers"
-    except Exception as e:
-        log.warning("Transformers failed: %s. Using rule-based fallback." % e)
-        return None, "fallback"
+# Multi-word patterns get higher weight (2) vs single words (1)
+CONSULTA_PATTERNS = [
+    # Multi-word (weight 2)
+    "como hago", "es posible", "quisiera saber", "me podrían indicar",
+    "me podrian indicar", "necesito saber", "ayuda con",
+    "me gustaría saber", "me gustaria saber", "qué debo", "que debo",
+    "pasos para",
+    # Single-word (weight 1)
+    "cómo", "como", "dónde", "donde", "cuándo", "cuando", "puedo",
+    "consulta", "duda", "información", "informacion",
+    "orientación", "orientacion", "procedimiento", "requisitos",
+    "instrucciones",
+]
+
+RECLAMO_PATTERNS = [
+    # Multi-word (weight 2)
+    "no funciona", "no puedo", "no me deja", "se cayó", "se cayo",
+    "no anda", "no carga", "tira error", "pantalla en blanco",
+    "no responde", "se cuelga", "devuelve error", "sistema caído",
+    "sistema caido", "no se puede",
+    # Single-word (weight 1)
+    "error", "falla", "problema", "reclamo", "queja", "urgente",
+    "imposible", "bug", "incorrecto", "mal",
+]
+
+# ── Staff response detection patterns ──
+STAFF_PATTERNS = [
+    # Imperativos con voseo
+    "probá", "verificá", "ingresá", "revisá", "intentá", "descargá",
+    "accedé", "seleccioná", "completá", "adjuntá", "enviá", "confirmá",
+    "aguardá", "comunicate",
+    # Frases de soporte
+    "le informamos", "le comunicamos", "procedemos a",
+    "queda a disposición", "queda a disposicion",
+    "fue derivado", "se resolvió", "se resolvio",
+    "hemos verificado", "según lo conversado", "segun lo conversado",
+    "tal como se indicó", "tal como se indico",
+    "por favor realice", "deberá", "debera",
+    "sugerimos", "recomendamos",
+    # Cierres formales
+    "saludos cordiales", "atte.", "atentamente",
+    "quedamos a su disposición", "quedamos a su disposicion",
+    "no dude en contactarnos",
+]
+
+STAFF_THRESHOLD = 2  # Minimum pattern matches to classify as staff
 
 
-class SentimentAnalyzer:
-    def __init__(self):
-        self.model, self.model_type = _load_sentiment_model()
+def _normalize_text(text):
+    """Lowercase and strip accents for matching."""
+    text = text.lower()
+    nfkd = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
 
+
+def is_staff_response(text):
+    """Detect if a text is a staff/support response based on linguistic patterns."""
+    if not text or len(text.strip()) < 10:
+        return False
+    text_lower = text.lower()
+    text_normalized = _normalize_text(text)
+    matches = 0
+    for pattern in STAFF_PATTERNS:
+        pattern_normalized = _normalize_text(pattern)
+        if pattern_normalized in text_normalized or pattern in text_lower:
+            matches += 1
+            if matches >= STAFF_THRESHOLD:
+                return True
+    return False
+
+
+class IntentClassifier:
     def analyze_tickets(self, tickets):
         total = len(tickets)
         for i, ticket in enumerate(tickets, 1):
-            text = ticket.get("first_article_body", "")
+            text = ticket.get("user_message_body", "") or ticket.get("first_article_body", "")
             if not text or len(text.strip()) < 10:
-                ticket["sentiment"] = "NEU"
-                ticket["sentiment_label"] = "Neutro"
-                ticket["sentiment_score"] = 0.5
-                log.info("  [%d/%d] Empty/short -> Neutro", i, total)
+                ticket["intent"] = "INDETERMINADO"
+                ticket["intent_label"] = "Indeterminado"
+                ticket["confidence"] = 0.0
+                log.info("  [%d/%d] Empty/short -> Indeterminado", i, total)
                 continue
-            sentiment = self._analyze_text(text[:1500])
-            ticket["sentiment"] = sentiment["label"]
-            ticket["sentiment_label"] = sentiment["label_es"]
-            ticket["sentiment_score"] = sentiment["score"]
+            result = self._classify_intent(text)
+            ticket["intent"] = result["intent"]
+            ticket["intent_label"] = result["intent_label"]
+            ticket["confidence"] = result["confidence"]
             log.info("  [%d/%d] %s (%.2f)", i, total,
-                     sentiment["label_es"], sentiment["score"])
+                     result["intent_label"], result["confidence"])
         return tickets
 
-    def _analyze_text(self, text):
-        if self.model_type == "pysentimiento":
-            result = self.model.predict(text)
-            label = result.output
-            probas = result.probas
-            label_map = {"POS": "Positivo", "NEG": "Negativo", "NEU": "Neutro"}
-            return {
-                "label": label,
-                "label_es": label_map.get(label, label),
-                "score": max(probas.values()),
-                "probas": probas,
-            }
-        elif self.model_type == "transformers":
-            result = self.model(text[:512])[0]
-            stars = int(result["label"].split()[0])
-            if stars <= 2:
-                label, label_es = "NEG", "Negativo"
-            elif stars == 3:
-                label, label_es = "NEU", "Neutro"
-            else:
-                label, label_es = "POS", "Positivo"
-            return {"label": label, "label_es": label_es, "score": result["score"]}
-        else:
-            return self._rule_based_sentiment(text)
+    def _classify_intent(self, text):
+        text_lower = text.lower()
+        text_normalized = _normalize_text(text)
 
-    def _rule_based_sentiment(self, text):
-        tl = text.lower()
-        pos = ["gracias", "agradezco", "excelente", "perfecto", "bien",
-               "funciona", "resuelto", "solucionado", "correcto", "ok",
-               "bueno", "genial", "satisfecho"]
-        neg = ["error", "problema", "falla", "no funciona", "imposible",
-               "urgente", "grave", "mal", "horrible", "pesimo", "queja",
-               "reclamo", "no puedo", "no se puede", "incorrecto",
-               "equivocado", "demora", "lento", "nunca"]
-        pc = sum(1 for w in pos if w in tl)
-        nc = sum(1 for w in neg if w in tl)
-        if nc > pc:
-            return {"label": "NEG", "label_es": "Negativo", "score": 0.6}
-        elif pc > nc:
-            return {"label": "POS", "label_es": "Positivo", "score": 0.6}
+        consulta_score = 0
+        reclamo_score = 0
+        consulta_matches = 0
+        reclamo_matches = 0
+
+        # Check for question marks (strong consulta signal)
+        if "?" in text:
+            consulta_score += 2
+            consulta_matches += 1
+
+        for pattern in CONSULTA_PATTERNS:
+            pattern_norm = _normalize_text(pattern)
+            if pattern_norm in text_normalized or pattern in text_lower:
+                weight = 2 if " " in pattern else 1
+                consulta_score += weight
+                consulta_matches += 1
+
+        for pattern in RECLAMO_PATTERNS:
+            pattern_norm = _normalize_text(pattern)
+            if pattern_norm in text_normalized or pattern in text_lower:
+                weight = 2 if " " in pattern else 1
+                reclamo_score += weight
+                reclamo_matches += 1
+
+        total_matches = consulta_matches + reclamo_matches
+
+        if total_matches == 0:
+            return {"intent": "INDETERMINADO", "intent_label": "Indeterminado", "confidence": 0.0}
+
+        if consulta_score > reclamo_score:
+            confidence = consulta_score / (consulta_score + reclamo_score)
+            return {"intent": "CONSULTA", "intent_label": "Consulta/Duda", "confidence": round(confidence, 2)}
+        elif reclamo_score > consulta_score:
+            confidence = reclamo_score / (consulta_score + reclamo_score)
+            return {"intent": "RECLAMO", "intent_label": "Reclamo/Error", "confidence": round(confidence, 2)}
         else:
-            return {"label": "NEU", "label_es": "Neutro", "score": 0.5}
+            # Tie — indeterminate
+            return {"intent": "INDETERMINADO", "intent_label": "Indeterminado", "confidence": 0.5}
 
     def get_summary(self, tickets):
         total = len(tickets)
         if total == 0:
-            return {"total": 0, "positive": 0, "negative": 0, "neutral": 0}
-        counts = Counter(t.get("sentiment", "NEU") for t in tickets)
+            return {"total": 0, "consulta": 0, "reclamo": 0, "indeterminado": 0}
+        counts = Counter(t.get("intent", "INDETERMINADO") for t in tickets)
         return {
             "total": total,
-            "positive": counts.get("POS", 0),
-            "negative": counts.get("NEG", 0),
-            "neutral": counts.get("NEU", 0),
-            "positive_pct": round(counts.get("POS", 0) / total * 100, 1),
-            "negative_pct": round(counts.get("NEG", 0) / total * 100, 1),
-            "neutral_pct": round(counts.get("NEU", 0) / total * 100, 1),
+            "consulta": counts.get("CONSULTA", 0),
+            "reclamo": counts.get("RECLAMO", 0),
+            "indeterminado": counts.get("INDETERMINADO", 0),
+            "consulta_pct": round(counts.get("CONSULTA", 0) / total * 100, 1),
+            "reclamo_pct": round(counts.get("RECLAMO", 0) / total * 100, 1),
+            "indeterminado_pct": round(counts.get("INDETERMINADO", 0) / total * 100, 1),
         }
 
     # ══════════════════════════════════════════════════════════════
@@ -231,8 +282,8 @@ class SentimentAnalyzer:
         Returns dict: {"image_b64": str, "top_bigrams": list, "top_trigrams": list}
         """
         all_texts = [
-            t.get("first_article_body", "")
-            for t in tickets if t.get("first_article_body")
+            t.get("user_message_body", "") or t.get("first_article_body", "")
+            for t in tickets if t.get("user_message_body") or t.get("first_article_body")
         ]
         if not all_texts:
             return {"image_b64": "", "top_bigrams": [], "top_trigrams": []}
@@ -280,9 +331,6 @@ class SentimentAnalyzer:
         trigram_freq = Counter({k: v for k, v in trigram_freq.items() if v >= 2})
 
         # ── Deduplication: demote unigrams absorbed by frequent n-grams ──
-        # If a word appears in a bigram/trigram that has >= 75% of the word's
-        # unigram count, remove the word from unigrams (the n-gram represents
-        # it better as a concept).
         words_in_ngrams = Counter()
         for ngram, count in list(bigram_freq.items()) + list(trigram_freq.items()):
             for w in ngram.split():
@@ -359,8 +407,7 @@ class SentimentAnalyzer:
 
     @staticmethod
     def _normalize_accent(text):
-        """Strip accents for comparison: dias == dias, presentacion == presentacion."""
-        import unicodedata
+        """Strip accents for comparison."""
         nfkd = unicodedata.normalize("NFKD", text)
         return "".join(c for c in nfkd if not unicodedata.combining(c))
 
@@ -371,7 +418,6 @@ class SentimentAnalyzer:
         normalized = self._normalize_accent(ngram)
         if normalized in EXCLUDED_NGRAMS:
             return True
-        # Also check the normalized version against normalized exclusions
         if not hasattr(self, "_normalized_excluded"):
             self._normalized_excluded = {
                 self._normalize_accent(x) for x in EXCLUDED_NGRAMS
@@ -383,7 +429,6 @@ class SentimentAnalyzer:
         text = re.sub(r"http\S+", "", text)
         text = re.sub(r"[\w\.-]+@[\w\.-]+", "", text)
         text = text.lower()
-        # Match sequences of Latin letters including accented Spanish chars
         tokens = re.findall(r"[a-z\u00e1\u00e9\u00ed\u00f3\u00fa\u00f1\u00fc]+", text)
         return [t for t in tokens if len(t) > 2]
 

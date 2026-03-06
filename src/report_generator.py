@@ -1,7 +1,7 @@
 """
 Report Generator
 ================
-Generates a polished HTML report with sentiment analysis results,
+Generates a polished HTML report with intent classification results,
 charts, and word cloud visualization.
 """
 
@@ -10,17 +10,17 @@ from datetime import datetime
 
 log = logging.getLogger(__name__)
 
-# ── Colors for sentiment ──
-SENTIMENT_COLORS = {
-    "POS": "#10b981",
-    "NEG": "#ef4444",
-    "NEU": "#6b7280",
+# ── Colors for intent ──
+INTENT_COLORS = {
+    "CONSULTA": "#00b894",
+    "RECLAMO": "#e17055",
+    "INDETERMINADO": "#636e72",
 }
 
-SENTIMENT_ICONS = {
-    "POS": "&#x1F7E2;",  # green circle
-    "NEG": "&#x1F534;",  # red circle
-    "NEU": "&#x26AA;",  # white circle
+INTENT_ICONS = {
+    "CONSULTA": "&#x2753;",     # question mark
+    "RECLAMO": "&#x26A0;",      # warning sign
+    "INDETERMINADO": "&#x2796;", # heavy minus
 }
 
 
@@ -28,7 +28,7 @@ class ReportGenerator:
     def generate(
         self,
         tickets: list[dict],
-        sentiment_summary: dict,
+        intent_summary: dict,
         wordcloud_b64: str,
         search_params: dict,
         generated_at: datetime,
@@ -38,7 +38,6 @@ class ReportGenerator:
     ) -> str:
         """Generate the full HTML report."""
         ticket_rows = self._build_ticket_rows(tickets)
-        chart_data = self._build_chart_data(sentiment_summary)
         timeline_charts = self._build_timeline_charts(timeline_data or {})
         ngram_lists = self._build_ngram_lists(top_bigrams or [], top_trigrams or [])
 
@@ -48,18 +47,18 @@ class ReportGenerator:
             queues=", ".join(search_params.get("queues", [])),
             date_from=search_params.get("date_from", ""),
             date_to=search_params.get("date_to", ""),
-            total=sentiment_summary.get("total", 0),
-            positive=sentiment_summary.get("positive", 0),
-            negative=sentiment_summary.get("negative", 0),
-            neutral=sentiment_summary.get("neutral", 0),
-            positive_pct=sentiment_summary.get("positive_pct", 0),
-            negative_pct=sentiment_summary.get("negative_pct", 0),
-            neutral_pct=sentiment_summary.get("neutral_pct", 0),
+            total=intent_summary.get("total", 0),
+            consulta=intent_summary.get("consulta", 0),
+            reclamo=intent_summary.get("reclamo", 0),
+            indeterminado=intent_summary.get("indeterminado", 0),
+            consulta_pct=intent_summary.get("consulta_pct", 0),
+            reclamo_pct=intent_summary.get("reclamo_pct", 0),
+            indeterminado_pct=intent_summary.get("indeterminado_pct", 0),
             wordcloud_b64=wordcloud_b64,
             ticket_rows=ticket_rows,
-            chart_positive=sentiment_summary.get("positive", 0),
-            chart_negative=sentiment_summary.get("negative", 0),
-            chart_neutral=sentiment_summary.get("neutral", 0),
+            chart_consulta=intent_summary.get("consulta", 0),
+            chart_reclamo=intent_summary.get("reclamo", 0),
+            chart_indeterminado=intent_summary.get("indeterminado", 0),
             timeline_charts=timeline_charts,
             ngram_lists=ngram_lists,
         )
@@ -69,14 +68,14 @@ class ReportGenerator:
     def _build_ticket_rows(self, tickets: list[dict]) -> str:
         rows = []
         for idx, t in enumerate(tickets):
-            sentiment = t.get("sentiment", "NEU")
-            color = SENTIMENT_COLORS.get(sentiment, "#6b7280")
-            icon = SENTIMENT_ICONS.get(sentiment, "")
-            label = t.get("sentiment_label", "Neutro")
-            score = t.get("sentiment_score", 0)
+            intent = t.get("intent", "INDETERMINADO")
+            color = INTENT_COLORS.get(intent, "#636e72")
+            icon = INTENT_ICONS.get(intent, "")
+            label = t.get("intent_label", "Indeterminado")
+            confidence = t.get("confidence", 0)
 
             # Full body — escape HTML but preserve line breaks
-            body = t.get("first_article_body", "")
+            body = t.get("user_message_body", "") or t.get("first_article_body", "")
             body_html = (
                 body.replace("&", "&amp;")
                 .replace("<", "&lt;")
@@ -116,16 +115,20 @@ class ReportGenerator:
                 .replace(">", "&gt;")
             )
 
+            staff_badge = ""
+            if t.get("staff_filtered"):
+                staff_badge = ' <span class="badge staff-badge">Staff filtrado</span>'
+
             row = f"""
-            <div class="ticket-card" data-sentiment="{sentiment}">
+            <div class="ticket-card" data-intent="{intent}">
                 <div class="ticket-header" onclick="toggleBody('body-{idx}', this)">
                     <div class="ticket-meta-row">
                         <span class="ticket-number">{ticket_number}</span>
-                        <span class="badge" style="--badge-color: {color}">{icon} {label}</span>
+                        <span class="badge" style="--badge-color: {color}">{icon} {label}</span>{staff_badge}
                         <div class="score-bar">
-                            <div class="score-fill" style="width: {score*100:.0f}%; background: {color}"></div>
+                            <div class="score-fill" style="width: {confidence*100:.0f}%; background: {color}"></div>
                         </div>
-                        <span class="score-value">{score:.0%}</span>
+                        <span class="score-value">{confidence:.0%}</span>
                         <span class="ticket-queue">{queue}</span>
                         <span class="ticket-date">{created}</span>
                         <span class="expand-icon">&#x25BC;</span>
@@ -224,13 +227,6 @@ class ReportGenerator:
 
         return '<div class="ngram-lists">%s%s</div>' % (bigram_html, trigram_html)
 
-    def _build_chart_data(self, summary: dict) -> dict:
-        return {
-            "positive": summary.get("positive", 0),
-            "negative": summary.get("negative", 0),
-            "neutral": summary.get("neutral", 0),
-        }
-
 
 # ── HTML Template ──
 REPORT_TEMPLATE = """<!DOCTYPE html>
@@ -238,7 +234,7 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Análisis de Sentimiento — Tickets OTRS</title>
+<title>Clasificaci\u00f3n de Tickets por Intenci\u00f3n — OTRS</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,500;0,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root {{
@@ -249,9 +245,9 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
     --text-primary: #e2e8f0;
     --text-secondary: #94a3b8;
     --text-muted: #64748b;
-    --accent-green: #10b981;
-    --accent-red: #ef4444;
-    --accent-gray: #6b7280;
+    --accent-teal: #00b894;
+    --accent-orange: #e17055;
+    --accent-gray: #636e72;
     --accent-blue: #3b82f6;
     --border: #1e293b;
     --radius: 12px;
@@ -286,7 +282,7 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
     top: 0; left: 50%;
     transform: translateX(-50%);
     width: 200px; height: 3px;
-    background: linear-gradient(90deg, var(--accent-blue), var(--accent-green));
+    background: linear-gradient(90deg, var(--accent-teal), var(--accent-orange));
     border-radius: 2px;
   }}
 
@@ -376,9 +372,9 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
   }}
 
   .stat-card.total .stat-value {{ color: var(--accent-blue); }}
-  .stat-card.positive .stat-value {{ color: var(--accent-green); }}
-  .stat-card.negative .stat-value {{ color: var(--accent-red); }}
-  .stat-card.neutral .stat-value {{ color: var(--accent-gray); }}
+  .stat-card.consulta .stat-value {{ color: var(--accent-teal); }}
+  .stat-card.reclamo .stat-value {{ color: var(--accent-orange); }}
+  .stat-card.indeterminado .stat-value {{ color: var(--accent-gray); }}
 
   /* ── Chart Section ── */
   .section {{
@@ -486,7 +482,7 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
   }}
 
   .bar-label {{
-    width: 80px;
+    width: 110px;
     font-size: 0.85rem;
     color: var(--text-secondary);
     text-align: right;
@@ -699,6 +695,12 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
     white-space: nowrap;
   }}
 
+  .staff-badge {{
+    --badge-color: #fdcb6e;
+    font-size: 0.7rem;
+    padding: 0.15rem 0.5rem;
+  }}
+
   .score-bar {{
     width: 60px;
     height: 6px;
@@ -787,7 +789,7 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
   }}
 
   .timeline-bar-fill.month-fill {{
-    background: linear-gradient(90deg, var(--accent-blue), var(--accent-green));
+    background: linear-gradient(90deg, var(--accent-teal), var(--accent-orange));
   }}
 
   .timeline-count {{
@@ -911,12 +913,12 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
 
   <!-- Header -->
   <header class="header">
-    <h1>Análisis de Sentimiento — OTRS</h1>
-    <p class="subtitle">Reporte automático generado el {generated_at}</p>
+    <h1>Clasificaci\u00f3n de Tickets por Intenci\u00f3n — OTRS</h1>
+    <p class="subtitle">Reporte autom\u00e1tico generado el {generated_at}</p>
     <div class="meta-bar">
-      <span class="meta-item">Búsqueda: <strong>{fulltext}</strong></span>
+      <span class="meta-item">B\u00fasqueda: <strong>{fulltext}</strong></span>
       <span class="meta-item">Colas: <strong>{queues}</strong></span>
-      <span class="meta-item">Período: <strong>{date_from} → {date_to}</strong></span>
+      <span class="meta-item">Per\u00edodo: <strong>{date_from} \u2192 {date_to}</strong></span>
     </div>
   </header>
 
@@ -926,40 +928,40 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
       <div class="stat-value">{total}</div>
       <div class="stat-label">Total tickets</div>
     </div>
-    <div class="stat-card positive">
-      <div class="stat-value">{positive}</div>
-      <div class="stat-label">Positivos</div>
-      <div class="stat-pct">{positive_pct}%</div>
+    <div class="stat-card consulta">
+      <div class="stat-value">{consulta}</div>
+      <div class="stat-label">Consulta / Duda</div>
+      <div class="stat-pct">{consulta_pct}%</div>
     </div>
-    <div class="stat-card negative">
-      <div class="stat-value">{negative}</div>
-      <div class="stat-label">Negativos</div>
-      <div class="stat-pct">{negative_pct}%</div>
+    <div class="stat-card reclamo">
+      <div class="stat-value">{reclamo}</div>
+      <div class="stat-label">Reclamo / Error</div>
+      <div class="stat-pct">{reclamo_pct}%</div>
     </div>
-    <div class="stat-card neutral">
-      <div class="stat-value">{neutral}</div>
-      <div class="stat-label">Neutros</div>
-      <div class="stat-pct">{neutral_pct}%</div>
+    <div class="stat-card indeterminado">
+      <div class="stat-value">{indeterminado}</div>
+      <div class="stat-label">Indeterminado</div>
+      <div class="stat-pct">{indeterminado_pct}%</div>
     </div>
   </div>
 
   <!-- Chart -->
   <div class="section">
-    <h2 class="section-title">Distribución de Sentimiento</h2>
+    <h2 class="section-title">Distribuci\u00f3n por Intenci\u00f3n</h2>
     <div class="chart-container">
 
       <div class="donut-chart">
         <svg viewBox="0 0 220 220" width="220" height="220">
           <circle cx="110" cy="110" r="90" fill="none" stroke="var(--bg-primary)" stroke-width="24"/>
-          <circle id="arc-pos" cx="110" cy="110" r="90" fill="none"
-            stroke="var(--accent-green)" stroke-width="24"
+          <circle id="arc-consulta" cx="110" cy="110" r="90" fill="none"
+            stroke="var(--accent-teal)" stroke-width="24"
             stroke-dasharray="0 565.5"
             stroke-linecap="round"/>
-          <circle id="arc-neg" cx="110" cy="110" r="90" fill="none"
-            stroke="var(--accent-red)" stroke-width="24"
+          <circle id="arc-reclamo" cx="110" cy="110" r="90" fill="none"
+            stroke="var(--accent-orange)" stroke-width="24"
             stroke-dasharray="0 565.5"
             stroke-linecap="round"/>
-          <circle id="arc-neu" cx="110" cy="110" r="90" fill="none"
+          <circle id="arc-indeterminado" cx="110" cy="110" r="90" fill="none"
             stroke="var(--accent-gray)" stroke-width="24"
             stroke-dasharray="0 565.5"
             stroke-linecap="round"/>
@@ -972,26 +974,26 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
 
       <div class="bar-chart">
         <div class="bar-row">
-          <span class="bar-label">Positivo</span>
+          <span class="bar-label">Consulta/Duda</span>
           <div class="bar-track">
-            <div class="bar-fill" style="width: {positive_pct}%; background: var(--accent-green);">
-              {positive} ({positive_pct}%)
+            <div class="bar-fill" style="width: {consulta_pct}%; background: var(--accent-teal);">
+              {consulta} ({consulta_pct}%)
             </div>
           </div>
         </div>
         <div class="bar-row">
-          <span class="bar-label">Negativo</span>
+          <span class="bar-label">Reclamo/Error</span>
           <div class="bar-track">
-            <div class="bar-fill" style="width: {negative_pct}%; background: var(--accent-red);">
-              {negative} ({negative_pct}%)
+            <div class="bar-fill" style="width: {reclamo_pct}%; background: var(--accent-orange);">
+              {reclamo} ({reclamo_pct}%)
             </div>
           </div>
         </div>
         <div class="bar-row">
-          <span class="bar-label">Neutro</span>
+          <span class="bar-label">Indeterminado</span>
           <div class="bar-track">
-            <div class="bar-fill" style="width: {neutral_pct}%; background: var(--accent-gray);">
-              {neutral} ({neutral_pct}%)
+            <div class="bar-fill" style="width: {indeterminado_pct}%; background: var(--accent-gray);">
+              {indeterminado} ({indeterminado_pct}%)
             </div>
           </div>
         </div>
@@ -999,31 +1001,32 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
 
       <div class="chart-legend">
         <div class="legend-item">
-          <div class="legend-dot" style="background: var(--accent-green)"></div>
-          <span class="legend-label">Positivo</span>
-          <span class="legend-value">{positive}</span>
+          <div class="legend-dot" style="background: var(--accent-teal)"></div>
+          <span class="legend-label">Consulta/Duda</span>
+          <span class="legend-value">{consulta}</span>
         </div>
         <div class="legend-item">
-          <div class="legend-dot" style="background: var(--accent-red)"></div>
-          <span class="legend-label">Negativo</span>
-          <span class="legend-value">{negative}</span>
+          <div class="legend-dot" style="background: var(--accent-orange)"></div>
+          <span class="legend-label">Reclamo/Error</span>
+          <span class="legend-value">{reclamo}</span>
         </div>
         <div class="legend-item">
           <div class="legend-dot" style="background: var(--accent-gray)"></div>
-          <span class="legend-label">Neutro</span>
-          <span class="legend-value">{neutral}</span>
+          <span class="legend-label">Indeterminado</span>
+          <span class="legend-value">{indeterminado}</span>
         </div>
       </div>
 
     </div>
   </div>
 
-  <!-- Word Cloud -->
+  <!-- Timeline -->
   <div class="section">
     <h2 class="section-title">Volumen de Tickets</h2>
     {timeline_charts}
   </div>
 
+  <!-- Word Cloud -->
   <div class="section">
     <h2 class="section-title">Nube de Palabras</h2>
     <div class="wordcloud-container">
@@ -1038,9 +1041,9 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
     <div class="table-container">
       <div class="table-controls">
         <button class="filter-btn active" onclick="filterTickets('ALL')">Todos</button>
-        <button class="filter-btn" onclick="filterTickets('POS')">&#x1F7E2; Positivos</button>
-        <button class="filter-btn" onclick="filterTickets('NEG')">&#x1F534; Negativos</button>
-        <button class="filter-btn" onclick="filterTickets('NEU')">&#x26AA; Neutros</button>
+        <button class="filter-btn" onclick="filterTickets('CONSULTA')">&#x2753; Consultas</button>
+        <button class="filter-btn" onclick="filterTickets('RECLAMO')">&#x26A0; Reclamos</button>
+        <button class="filter-btn" onclick="filterTickets('INDETERMINADO')">&#x2796; Indeterminados</button>
         <button class="filter-btn" onclick="expandAll(true)" style="margin-left: auto;">Expandir todos</button>
         <button class="filter-btn" onclick="expandAll(false)">Colapsar todos</button>
       </div>
@@ -1051,8 +1054,8 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
   </div>
 
   <footer class="footer">
-    Generado automáticamente el {generated_at} &mdash;
-    Análisis de sentimiento con <a href="https://github.com/pysentimiento/pysentimiento">pysentimiento</a>
+    Generado autom\u00e1ticamente el {generated_at} &mdash;
+    Clasificaci\u00f3n por intenci\u00f3n basada en patrones de keywords
   </footer>
 
 </div>
@@ -1061,33 +1064,33 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
 // ── Donut chart animation ──
 (function() {{
   const total = {total} || 1;
-  const pos = {chart_positive};
-  const neg = {chart_negative};
-  const neu = {chart_neutral};
+  const consulta = {chart_consulta};
+  const reclamo = {chart_reclamo};
+  const indeterminado = {chart_indeterminado};
   const C = 2 * Math.PI * 90; // circumference
 
-  const posLen = (pos / total) * C;
-  const negLen = (neg / total) * C;
-  const neuLen = (neu / total) * C;
+  const consultaLen = (consulta / total) * C;
+  const reclamoLen = (reclamo / total) * C;
+  const indeterminadoLen = (indeterminado / total) * C;
 
-  const arcPos = document.getElementById('arc-pos');
-  const arcNeg = document.getElementById('arc-neg');
-  const arcNeu = document.getElementById('arc-neu');
+  const arcConsulta = document.getElementById('arc-consulta');
+  const arcReclamo = document.getElementById('arc-reclamo');
+  const arcIndeterminado = document.getElementById('arc-indeterminado');
 
-  if (arcPos) {{
-    arcPos.setAttribute('stroke-dasharray', posLen + ' ' + C);
-    arcPos.setAttribute('stroke-dashoffset', '0');
+  if (arcConsulta) {{
+    arcConsulta.setAttribute('stroke-dasharray', consultaLen + ' ' + C);
+    arcConsulta.setAttribute('stroke-dashoffset', '0');
 
-    arcNeg.setAttribute('stroke-dasharray', negLen + ' ' + C);
-    arcNeg.setAttribute('stroke-dashoffset', -posLen);
+    arcReclamo.setAttribute('stroke-dasharray', reclamoLen + ' ' + C);
+    arcReclamo.setAttribute('stroke-dashoffset', -consultaLen);
 
-    arcNeu.setAttribute('stroke-dasharray', neuLen + ' ' + C);
-    arcNeu.setAttribute('stroke-dashoffset', -(posLen + negLen));
+    arcIndeterminado.setAttribute('stroke-dasharray', indeterminadoLen + ' ' + C);
+    arcIndeterminado.setAttribute('stroke-dashoffset', -(consultaLen + reclamoLen));
   }}
 }})();
 
 // ── Filter tickets ──
-function filterTickets(sentiment) {{
+function filterTickets(intent) {{
   const cards = document.querySelectorAll('.ticket-card');
   const btns = document.querySelectorAll('.filter-btn');
 
@@ -1098,7 +1101,7 @@ function filterTickets(sentiment) {{
   event.target.classList.add('active');
 
   cards.forEach(card => {{
-    if (sentiment === 'ALL' || card.dataset.sentiment === sentiment) {{
+    if (intent === 'ALL' || card.dataset.intent === intent) {{
       card.style.display = '';
     }} else {{
       card.style.display = 'none';

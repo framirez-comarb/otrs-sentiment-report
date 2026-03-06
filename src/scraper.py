@@ -21,6 +21,8 @@ from html import unescape
 import requests
 from bs4 import BeautifulSoup
 
+from src.analyzer import is_staff_response
+
 log = logging.getLogger(__name__)
 
 REQUEST_DELAY = 1.0
@@ -311,86 +313,132 @@ class OTRSScraper:
                     "first_article_from": content.get("from", ""),
                     "first_article_subject": content.get("subject", ""),
                     "first_article_date": content.get("date", ""),
+                    "user_message_body": content.get("user_body", "") or content.get("body", ""),
+                    "is_user_message": content.get("is_user_message", True),
+                    "staff_filtered": content.get("staff_filtered", False),
                 })
-                body = ticket["first_article_body"]
+                body = ticket["user_message_body"]
                 if body:
                     preview = body[:80].replace("\n", " ")
-                    log.info(f"    OK ({len(body)} chars): {preview}...")
+                    suffix = " [staff filtered]" if ticket["staff_filtered"] else ""
+                    log.info(f"    OK ({len(body)} chars){suffix}: {preview}...")
                 else:
                     log.warning(f"    No text content for ticket {ticket['ticket_id']}")
             except Exception as e:
                 log.error(f"    Error: {e}")
                 ticket["first_article_body"] = ""
+                ticket["user_message_body"] = ""
+                ticket["is_user_message"] = False
+                ticket["staff_filtered"] = False
             results.append(ticket)
         return results
 
     def _fetch_ticket_first_article(self, ticket_id, ticket_title=""):
         """
-        Fetch the first article text using multiple strategies.
-        If the article only contains binary (image/PDF), falls back to ticket title.
+        Fetch articles from the ticket and find the first user (non-staff) message.
+        Iterates through all articles, using is_staff_response() to filter.
         """
-        result = {"body": "", "from": "", "subject": "", "date": ""}
+        result = {"body": "", "from": "", "subject": "", "date": "",
+                  "user_body": "", "is_user_message": False, "staff_filtered": False}
 
-        # Step 1: Load ticket zoom → find first ArticleID
+        # Step 1: Load ticket zoom → find all ArticleIDs
         url = f"{self.base_url}?Action=AgentTicketZoom;TicketID={ticket_id}"
         resp = self._get(url)
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        first_article_id = self._find_first_article_id(soup)
-        if not first_article_id:
+        article_ids = self._find_all_article_ids(soup)
+        if not article_ids:
             return result
 
-        # Step 2: Load page with first article active
-        url2 = f"{self.base_url}?Action=AgentTicketZoom;TicketID={ticket_id};ArticleID={first_article_id}"
-        resp2 = self._get(url2)
-        soup2 = BeautifulSoup(resp2.text, "html.parser")
-        meta = self._extract_article_meta(soup2)
+        # Step 2: Extract text from each article, find first non-staff message
+        articles_extracted = []
+        for article_id in article_ids:
+            body, meta = self._extract_article_content(ticket_id, article_id)
+            if _is_valid_text(body):
+                articles_extracted.append({"body": body, "meta": meta, "article_id": article_id})
 
-        # Step 3a: Try inline ArticleBody (plain text emails)
-        body = self._extract_inline_body(soup2)
+        if not articles_extracted:
+            # No text articles found — try ZoomExpand and title fallback
+            body = self._try_zoom_expand(ticket_id, article_ids[0])
+            if _is_valid_text(body):
+                meta = {"from": "", "subject": "", "date": ""}
+                articles_extracted.append({"body": body, "meta": meta, "article_id": article_ids[0]})
+
+        if not articles_extracted:
+            # Fallback to ticket title
+            if ticket_title and len(ticket_title) > 10:
+                clean_title = re.sub(r"^SUMA BOT\s*-\s*SIFERE\s*-\s*\d+\s*-\s*", "", ticket_title).strip()
+                if clean_title and len(clean_title) > 10:
+                    log.info(f"    Using ticket title as fallback: {clean_title[:60]}...")
+                    return {"body": clean_title, "from": "", "subject": "", "date": "",
+                            "user_body": clean_title, "is_user_message": True, "staff_filtered": False}
+            log.warning(f"    Ticket {ticket_id}: only binary content, no text extractable")
+            return result
+
+        # First article is always kept as first_article_body (backward compat)
+        first = articles_extracted[0]
+        result.update({
+            "body": first["body"],
+            "from": first["meta"].get("from", ""),
+            "subject": first["meta"].get("subject", ""),
+            "date": first["meta"].get("date", ""),
+        })
+
+        # Find first non-staff article
+        staff_filtered = False
+        for art in articles_extracted:
+            if not is_staff_response(art["body"]):
+                result["user_body"] = art["body"]
+                result["is_user_message"] = True
+                if art["article_id"] != articles_extracted[0]["article_id"]:
+                    staff_filtered = True
+                result["staff_filtered"] = staff_filtered
+                return result
+            staff_filtered = True
+
+        # All articles are staff responses — use first as fallback
+        log.info(f"    All {len(articles_extracted)} articles detected as staff, using first as fallback")
+        result["user_body"] = first["body"]
+        result["is_user_message"] = False
+        result["staff_filtered"] = True
+        return result
+
+    def _extract_article_content(self, ticket_id, article_id):
+        """Extract text body and meta from a single article. Returns (body, meta)."""
+        url = f"{self.base_url}?Action=AgentTicketZoom;TicketID={ticket_id};ArticleID={article_id}"
+        resp = self._get(url)
+        soup = BeautifulSoup(resp.text, "html.parser")
+        meta = self._extract_article_meta(soup)
+
+        # Try inline ArticleBody (plain text emails)
+        body = self._extract_inline_body(soup)
         if _is_valid_text(body):
-            return {"body": body, **meta}
+            return body, meta
 
-        # Step 3b: Check if there's an iframe (HTML emails)
+        # Check if there's an iframe (HTML emails)
         has_iframe = bool(
-            soup2.find("iframe", id=f"Iframe{first_article_id}") or
-            (soup2.find("div", class_="ArticleMailContent") or BeautifulSoup("", "html.parser")).find("iframe")
+            soup.find("iframe", id=f"Iframe{article_id}") or
+            (soup.find("div", class_="ArticleMailContent") or BeautifulSoup("", "html.parser")).find("iframe")
         )
 
         if has_iframe:
-            # Try HTMLView — this fetches the HTML email body
             for file_id in [1, 2, 3]:
-                body = self._fetch_html_view(ticket_id, first_article_id, file_id)
+                body = self._fetch_html_view(ticket_id, article_id, file_id)
                 if _is_valid_text(body):
-                    return {"body": body, **meta}
+                    return body, meta
 
-        # Step 4: Try direct attachment downloads (text/html or text/plain)
+        # Try direct attachment downloads
         for file_id in [1, 2, 3]:
-            body = self._fetch_attachment_text(ticket_id, first_article_id, file_id)
+            body = self._fetch_attachment_text(ticket_id, article_id, file_id)
             if _is_valid_text(body):
-                return {"body": body, **meta}
+                return body, meta
 
-        # Step 5: Try AgentTicketPlain (raw email source)
-        body = self._fetch_plain_article(ticket_id, first_article_id)
+        # Try AgentTicketPlain (raw email source)
+        body = self._fetch_plain_article(ticket_id, article_id)
         if _is_valid_text(body):
-            return {"body": body, **meta}
+            return body, meta
 
-        # Step 6: ZoomExpand=1 — show all articles expanded
-        body = self._try_zoom_expand(ticket_id, first_article_id)
-        if _is_valid_text(body):
-            return {"body": body, **meta}
-
-        # Step 7: Fallback — use ticket title (the subject often contains the complaint)
-        # This handles tickets where the user only sent an image/PDF with no text body
-        if ticket_title and len(ticket_title) > 10:
-            # Strip "SUMA BOT - SIFERE - CUIT - " prefix if present
-            clean_title = re.sub(r"^SUMA BOT\s*-\s*SIFERE\s*-\s*\d+\s*-\s*", "", ticket_title).strip()
-            if clean_title and len(clean_title) > 10:
-                log.info(f"    Using ticket title as fallback: {clean_title[:60]}...")
-                return {"body": clean_title, **meta}
-
-        log.warning(f"    Ticket {ticket_id}: only binary content, no text extractable")
-        return result
+        return "", meta
 
     def _fetch_html_view(self, ticket_id, article_id, file_id):
         """Fetch HTML email body via OTRS HTMLView endpoint."""
@@ -483,6 +531,27 @@ class OTRSScraper:
                 return m.group(1)
         aid = soup.find("input", class_="ArticleID")
         return aid["value"] if aid and aid.get("value") else None
+
+    def _find_all_article_ids(self, soup):
+        """Find all article IDs from the ticket zoom page."""
+        article_ids = []
+        # Method 1: Look for Row1, Row2, etc.
+        for row in soup.find_all("tr", id=re.compile(r"Row\d+")):
+            aid = row.find("input", class_="ArticleID")
+            if aid and aid.get("value") and aid["value"] not in article_ids:
+                article_ids.append(aid["value"])
+        # Method 2: Look for ArticleInfo inputs
+        if not article_ids:
+            for inp in soup.find_all("input", class_="ArticleInfo"):
+                m = re.search(r"ArticleID=(\d+)", inp.get("value", ""))
+                if m and m.group(1) not in article_ids:
+                    article_ids.append(m.group(1))
+        # Method 3: Fallback to any ArticleID input
+        if not article_ids:
+            for aid in soup.find_all("input", class_="ArticleID"):
+                if aid.get("value") and aid["value"] not in article_ids:
+                    article_ids.append(aid["value"])
+        return article_ids
 
     def _extract_inline_body(self, soup):
         div = soup.find("div", class_="ArticleBody")

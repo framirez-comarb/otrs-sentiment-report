@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-OTRS Sentiment Analysis Report Generator
-=========================================
-Scrapes OTRS tickets matching search criteria, performs sentiment analysis
-on the first email of each ticket, generates a word cloud, and publishes
+OTRS Ticket Intent Classification Report Generator
+===================================================
+Scrapes OTRS tickets matching search criteria, classifies them by intent
+(Consulta/Duda vs Reclamo/Error), generates a word cloud, and publishes
 an HTML report to GitHub Pages.
 """
 
@@ -14,7 +14,7 @@ import logging
 from datetime import datetime, date
 
 from src.scraper import OTRSScraper
-from src.analyzer import SentimentAnalyzer
+from src.analyzer import IntentClassifier
 from src.report_generator import ReportGenerator
 
 logging.basicConfig(
@@ -43,7 +43,7 @@ def main():
     date_to = os.environ.get("DATE_TO", datetime.now().strftime("%Y-%m-%d"))
 
     log.info("=" * 60)
-    log.info("OTRS Sentiment Analysis Report")
+    log.info("OTRS Ticket Intent Classification Report")
     log.info("=" * 60)
     log.info(f"Search: '{search_fulltext}' | Queues: {search_queues}")
     log.info(f"Date range: {date_from} → {date_to}")
@@ -66,36 +66,38 @@ def main():
     if not tickets:
         log.warning("No tickets found. Generating empty report.")
 
-    log.info(f"Found {len(tickets)} tickets. Fetching first article of each...")
+    log.info(f"Found {len(tickets)} tickets. Fetching articles and filtering staff responses...")
 
     tickets_with_content = scraper.fetch_first_articles(tickets)
     scraper.close()
 
-    log.info(f"Successfully fetched content for {len(tickets_with_content)} tickets.")
+    staff_filtered_count = sum(1 for t in tickets_with_content if t.get("staff_filtered"))
+    log.info(f"Successfully fetched content for {len(tickets_with_content)} tickets "
+             f"({staff_filtered_count} with staff responses filtered).")
 
     # Save raw data for debugging
     os.makedirs("data", exist_ok=True)
     with open("data/tickets_raw.json", "w", encoding="utf-8") as f:
         json.dump(tickets_with_content, f, ensure_ascii=False, indent=2, default=str)
 
-    # ── Step 2: Sentiment Analysis ──
-    log.info("Step 2: Running sentiment analysis...")
-    analyzer = SentimentAnalyzer()
-    analyzed_tickets = analyzer.analyze_tickets(tickets_with_content)
+    # ── Step 2: Intent Classification ──
+    log.info("Step 2: Classifying tickets by intent...")
+    classifier = IntentClassifier()
+    analyzed_tickets = classifier.analyze_tickets(tickets_with_content)
 
-    sentiment_summary = analyzer.get_summary(analyzed_tickets)
-    log.info(f"Sentiment summary: {sentiment_summary}")
+    intent_summary = classifier.get_summary(analyzed_tickets)
+    log.info(f"Intent summary: {intent_summary}")
 
     # ── Step 3: Word Cloud ──
     log.info("Step 3: Generating word cloud...")
-    wordcloud_result = analyzer.generate_wordcloud(analyzed_tickets)
+    wordcloud_result = classifier.generate_wordcloud(analyzed_tickets)
     wordcloud_b64 = wordcloud_result["image_b64"]
     top_bigrams = wordcloud_result["top_bigrams"]
     top_trigrams = wordcloud_result["top_trigrams"]
 
     # ── Step 3b: Timeline data ──
     log.info("Step 3b: Computing timeline data...")
-    timeline_data = analyzer.get_timeline_data(analyzed_tickets)
+    timeline_data = classifier.get_timeline_data(analyzed_tickets)
 
     # ── Step 4: Generate Report ──
     log.info("Step 4: Generating HTML report...")
@@ -103,7 +105,7 @@ def main():
 
     report_html = generator.generate(
         tickets=analyzed_tickets,
-        sentiment_summary=sentiment_summary,
+        intent_summary=intent_summary,
         wordcloud_b64=wordcloud_b64,
         search_params={
             "fulltext": search_fulltext,

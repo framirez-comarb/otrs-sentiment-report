@@ -1,4 +1,4 @@
-name: Generate OTRS Sentiment Report
+name: Generate OTRS Intent Classification Report
 
 on:
   # Runs daily at 12:00 Argentina time (15:00 UTC)
@@ -28,13 +28,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      # Cache pip packages and the sentiment model
       - name: Cache Python dependencies
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cache/pip
-            ~/.cache/huggingface
+          path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
