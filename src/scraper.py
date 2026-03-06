@@ -25,7 +25,7 @@ from src.analyzer import is_staff_response
 
 log = logging.getLogger(__name__)
 
-REQUEST_DELAY = 1.0
+REQUEST_DELAY = 0.5
 
 KNOWN_QUEUE_IDS = {
     "SIFERE": "12", "SIFERE WEB": "35", "Módulo Consultas": "37",
@@ -311,48 +311,109 @@ class OTRSScraper:
             if cl and cl.next_sibling:
                 created = str(cl.next_sibling).strip()
 
+            # Extract article body and sender from preview section
+            article_body, article_from = self._extract_preview_content(item)
+
             tickets.append({
                 "ticket_id": tid, "ticket_number": tn, "title": title,
                 "queue": queue, "created": created,
                 "url": urljoin(self.base_url, href) if href else "",
+                "first_article_body": article_body,
+                "first_article_from": article_from,
             })
         return tickets
+
+    def _extract_preview_content(self, item):
+        """Extract article body text and sender from the search result preview."""
+        body = ""
+        article_from = ""
+
+        preview = item.find("div", class_="Preview")
+        if not preview:
+            return body, article_from
+
+        # Extract sender from the Headline span (e.g. "SIFERE WEB –")
+        headline = preview.find("span", class_="Headline")
+        if headline:
+            headline_text = headline.get_text(separator=" ", strip=True)
+            # The sender is the part before the – separator
+            m = re.match(r"^(.+?)\s*[–—\-]\s*", headline_text)
+            if m:
+                article_from = m.group(1).strip()
+
+        # Extract body: get all text content after the h3 header
+        li = preview.find("li")
+        if li:
+            h3 = li.find("h3")
+            if h3:
+                body_parts = []
+                for sibling in h3.find_next_siblings():
+                    text = sibling.get_text(separator=" ", strip=True)
+                    if text:
+                        body_parts.append(text)
+                body = " ".join(body_parts)
+
+        # Clean up: remove "Contestar: - Contestar - RESPONDER" prefix
+        body = re.sub(r"^Contestar:\s*-\s*Contestar\s*-\s*RESPONDER\s*", "", body).strip()
+
+        return body, article_from
 
     # ══════════════════════════════════════════════════════════════
     #  Article Extraction
     # ══════════════════════════════════════════════════════════════
 
     def fetch_first_articles(self, tickets):
+        """Process tickets using preview content from search results.
+        Only fetches individual tickets when preview body is missing or too short.
+        """
         results = []
         total = len(tickets)
+        fetched_count = 0
+
         for i, ticket in enumerate(tickets, 1):
             tn = ticket.get("ticket_number") or ticket["ticket_id"]
-            log.info(f"  [{i}/{total}] Ticket {tn}...")
-            try:
-                content = self._fetch_ticket_first_article(ticket["ticket_id"], ticket.get("title", ""))
-                ticket.update({
-                    "first_article_body": content.get("body", ""),
-                    "first_article_from": content.get("from", ""),
-                    "first_article_subject": content.get("subject", ""),
-                    "first_article_date": content.get("date", ""),
-                    "user_message_body": content.get("user_body", "") or content.get("body", ""),
-                    "is_user_message": content.get("is_user_message", True),
-                    "staff_filtered": content.get("staff_filtered", False),
-                })
-                body = ticket["user_message_body"]
-                if body:
-                    preview = body[:80].replace("\n", " ")
-                    suffix = " [staff filtered]" if ticket["staff_filtered"] else ""
-                    log.info(f"    OK ({len(body)} chars){suffix}: {preview}...")
-                else:
-                    log.warning(f"    No text content for ticket {ticket['ticket_id']}")
-            except Exception as e:
-                log.error(f"    Error: {e}")
-                ticket["first_article_body"] = ""
-                ticket["user_message_body"] = ""
+            body = ticket.get("first_article_body", "")
+
+            # If preview body is missing/short, fetch the ticket individually
+            if not _is_valid_text(body):
+                log.info(f"  [{i}/{total}] Ticket {tn}: no preview, fetching...")
+                fetched_count += 1
+                try:
+                    content = self._fetch_ticket_first_article(
+                        ticket["ticket_id"], ticket.get("title", ""))
+                    body = content.get("body", "")
+                    ticket["first_article_body"] = body
+                    ticket["first_article_from"] = (
+                        content.get("from", "") or ticket.get("first_article_from", ""))
+                    ticket["first_article_subject"] = content.get("subject", "")
+                    ticket["first_article_date"] = content.get("date", "")
+                except Exception as e:
+                    log.error(f"    Error: {e}")
+                    body = ""
+
+            # Apply staff detection on the body we have
+            if _is_valid_text(body) and is_staff_response(body):
+                # Body looks like staff — mark it but still use it (we only have
+                # one article from the preview; fetching all articles for 1500+
+                # tickets would be too slow)
+                ticket["user_message_body"] = body
                 ticket["is_user_message"] = False
                 ticket["staff_filtered"] = False
+            else:
+                ticket["user_message_body"] = body
+                ticket["is_user_message"] = True
+                ticket["staff_filtered"] = False
+
+            if body:
+                preview_text = body[:80].replace("\n", " ")
+                staff_flag = " [staff]" if not ticket["is_user_message"] else ""
+                log.info(f"  [{i}/{total}] {tn}{staff_flag}: {preview_text}...")
+            else:
+                log.warning(f"  [{i}/{total}] {tn}: no text content")
+
             results.append(ticket)
+
+        log.info(f"Processed {total} tickets ({fetched_count} required individual fetch)")
         return results
 
     def _fetch_ticket_first_article(self, ticket_id, ticket_title=""):
