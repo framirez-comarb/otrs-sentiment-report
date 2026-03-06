@@ -243,33 +243,47 @@ class OTRSScraper:
         tickets = self._parse_search_results(resp)
         log.info(f"Page 1: {len(tickets)} tickets")
 
+        seen_ticket_ids = {t["ticket_id"] for t in tickets}
+        visited_hits = {1}  # StartHit=1 is the first page
         page = 1
+
         while True:
             soup = BeautifulSoup(resp.text, "html.parser")
-            next_url = self._find_next_page(soup, page)
+            next_url, next_hit = self._find_next_page(soup, visited_hits)
             if not next_url:
                 break
+            visited_hits.add(next_hit)
             page += 1
             resp = self._get(next_url)
             more = self._parse_search_results(resp)
             if not more:
                 break
-            tickets.extend(more)
-            log.info(f"Page {page}: +{len(more)} (total: {len(tickets)})")
+            # Deduplicate: only add tickets we haven't seen
+            new_tickets = [t for t in more if t["ticket_id"] not in seen_ticket_ids]
+            if not new_tickets:
+                log.info(f"Page {page}: all duplicates, stopping pagination")
+                break
+            seen_ticket_ids.update(t["ticket_id"] for t in new_tickets)
+            tickets.extend(new_tickets)
+            log.info(f"Page {page}: +{len(new_tickets)} (total: {len(tickets)})")
 
         log.info(f"Total tickets: {len(tickets)}")
         return tickets
 
-    def _find_next_page(self, soup, current_page):
+    def _find_next_page(self, soup, visited_hits):
+        """Find the next unvisited pagination link. Returns (url, start_hit) or (None, None)."""
         links = soup.find_all("a", href=re.compile(r"StartHit="))
         if not links:
-            return None
-        for link in sorted(links, key=lambda l: int(re.search(r"StartHit=(\d+)", l["href"]).group(1))):
+            return None, None
+        # Sort by StartHit ascending and pick the first one we haven't visited
+        sorted_links = sorted(links, key=lambda l: int(re.search(r"StartHit=(\d+)", l["href"]).group(1)))
+        for link in sorted_links:
             hit = int(re.search(r"StartHit=(\d+)", link["href"]).group(1))
-            if hit > current_page * 35:
+            if hit not in visited_hits:
                 href = link["href"]
-                return href if href.startswith("http") else urljoin(self.base_url, href)
-        return None
+                url = href if href.startswith("http") else urljoin(self.base_url, href)
+                return url, hit
+        return None, None
 
     def _parse_search_results(self, resp):
         tickets = []
