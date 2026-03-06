@@ -301,7 +301,7 @@ class OTRSScraper:
             if m:
                 tn, title = m.group(1), m.group(2).strip()
 
-            queue, created = "", ""
+            queue, created, state = "", "", ""
             ql = item.find("label", string=re.compile(r"Cola"))
             if ql:
                 qd = ql.find_next_sibling("div")
@@ -310,6 +310,15 @@ class OTRSScraper:
             cl = item.find("label", string=re.compile(r"Creado"))
             if cl and cl.next_sibling:
                 created = str(cl.next_sibling).strip()
+            sl = item.find("label", string=re.compile(r"Estado"))
+            if sl:
+                sd = sl.find_next_sibling("div")
+                if sd:
+                    state = (sd.get("title", "") or sd.text.strip()).lower()
+
+            # Skip merged/closed tickets — they have no useful content
+            if state in ("fusionado", "merged"):
+                continue
 
             # Extract article body and sender from preview section
             article_body, article_from = self._extract_preview_content(item)
