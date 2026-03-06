@@ -36,8 +36,8 @@ def main():
         sys.exit(1)
 
     # Search parameters
-    search_fulltext = os.environ.get("SEARCH_FULLTEXT", "incógnito")
-    search_queues = os.environ.get("SEARCH_QUEUES", "SIFERE,Módulo Consultas,Módulo DDJJ")
+    search_fulltext = os.environ.get("SEARCH_FULLTEXT", "")
+    search_queues = os.environ.get("SEARCH_QUEUES", "SIFERE,Módulo DDJJ")
     search_queues = [q.strip() for q in search_queues.split(",")]
     date_from = os.environ.get("DATE_FROM", "2026-01-01")
     date_to = os.environ.get("DATE_TO", datetime.now().strftime("%Y-%m-%d"))
@@ -45,7 +45,7 @@ def main():
     log.info("=" * 60)
     log.info("OTRS Ticket Intent Classification Report")
     log.info("=" * 60)
-    log.info(f"Search: '{search_fulltext}' | Queues: {search_queues}")
+    log.info(f"Search: {f'{chr(39)}{search_fulltext}{chr(39)}' if search_fulltext else '(todas)'} | Queues: {search_queues}")
     log.info(f"Date range: {date_from} → {date_to}")
 
     # ── Step 1: Scrape OTRS ──

@@ -211,11 +211,16 @@ class OTRSScraper:
         df = datetime.strptime(date_from, "%Y-%m-%d")
         dt = datetime.strptime(date_to, "%Y-%m-%d")
 
+        # Build ShownAttributes based on whether fulltext is used
+        shown_attrs = "LabelQueueIDs,LabelTicketCreateTimeSlot"
+        if fulltext:
+            shown_attrs = "LabelFulltext," + shown_attrs
+
         search_data = [
             ("Action", "AgentTicketSearch"), ("Subaction", "Search"),
             ("EmptySearch", ""),
-            ("ShownAttributes", "LabelFulltext,LabelQueueIDs,LabelTicketCreateTimeSlot"),
-            ("Fulltext", fulltext), ("TimeSearchType", "TimeSlot"),
+            ("ShownAttributes", shown_attrs),
+            ("TimeSearchType", "TimeSlot"),
             ("TicketCreateTimeStartDay", str(df.day)),
             ("TicketCreateTimeStartMonth", str(df.month)),
             ("TicketCreateTimeStartYear", str(df.year)),
@@ -224,12 +229,14 @@ class OTRSScraper:
             ("TicketCreateTimeStopYear", str(dt.year)),
             ("ResultForm", "Normal"),
         ]
+        if fulltext:
+            search_data.append(("Fulltext", fulltext))
         for qid in selected_queue_ids:
             search_data.append(("QueueIDs", qid))
         if self._challenge_token:
             search_data.append(("ChallengeToken", self._challenge_token))
 
-        log.info(f"Searching: fulltext='{fulltext}', queues={selected_queue_ids}, "
+        log.info(f"Searching: fulltext='{fulltext or '(none)'}', queues={selected_queue_ids}, "
                  f"dates={date_from}→{date_to}")
 
         resp = self._post(self.base_url, data=search_data)
