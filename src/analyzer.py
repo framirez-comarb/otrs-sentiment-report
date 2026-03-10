@@ -46,6 +46,10 @@ STOPWORDS_ES = set((
     # ── Domain-specific exclusions ──
     "comarb sifere ddjj "
     "contribuyente contribuyentes del dato datos cuit cuits contacto "
+    # ── SUM footer signature (Atte. SUM - Sistema Unificado de Mesa de Ayuda) ──
+    "atte sum unificado "
+    # ── Email threading noise ──
+    "responder "
     # ── Deloitte and related ──
     "deloitte dttl deloite "
     # ── Common English words (from HTML emails, signatures, footers) ──
@@ -103,6 +107,13 @@ EXCLUDED_NGRAMS = {
     "estimado contribuyente", "estimada contribuyente",
     # ── Domain noise ──
     "archivo adjunto", "adjunto archivo",
+    # ── SUM signature fragments (Atte. SUM - Sistema Unificado de Mesa de Ayuda - Comisión Arbitral) ──
+    "sistema unificado", "unificado mesa", "mesa ayuda", "ayuda comision",
+    "comision arbitral del",
+    "sistema unificado mesa", "unificado mesa ayuda", "mesa ayuda comision",
+    "ayuda comision arbitral", "arbitral del convenio",
+    # ── Email threading ──
+    "responder todos", "todos responder", "responder todos responder",
     # ── Names ──
     "federico fernandez","federico","fernandez",
     # ── Deloitte / Tohmatsu (any n-gram with poison words also caught by code) ──
@@ -350,6 +361,28 @@ class IntentClassifier:
             log.info("Demoted %d unigrams absorbed by n-grams: %s",
                      len(demoted), ", ".join(sorted(demoted)[:15]))
 
+        # ── Deduplication: demote bigrams absorbed by frequent trigrams ──
+        bigrams_in_trigrams = Counter()
+        for trigram, count in trigram_freq.items():
+            words = trigram.split()
+            for i in range(len(words) - 1):
+                bi = words[i] + " " + words[i + 1]
+                if bi in bigram_freq:
+                    bigrams_in_trigrams[bi] += count
+
+        demoted_bigrams = set()
+        for bigram, tri_count in bigrams_in_trigrams.items():
+            bi_count = bigram_freq.get(bigram, 0)
+            if bi_count > 0 and tri_count >= bi_count * 0.75:
+                demoted_bigrams.add(bigram)
+
+        for bigram in demoted_bigrams:
+            del bigram_freq[bigram]
+
+        if demoted_bigrams:
+            log.info("Demoted %d bigrams absorbed by trigrams: %s",
+                     len(demoted_bigrams), ", ".join(sorted(demoted_bigrams)[:15]))
+
         # ── Build combined frequency for word cloud ──
         combined = Counter()
         combined.update(unigram_freq)
@@ -428,6 +461,10 @@ class IntentClassifier:
         """Tokenize text into lowercase Spanish words (>2 chars, only letters)."""
         text = re.sub(r"http\S+", "", text)
         text = re.sub(r"[\w\.-]+@[\w\.-]+", "", text)
+        # Strip boilerplate footer signature (e.g. "Atte. SUM Sistema Unificado...")
+        text = re.sub(r"\batte\.?\s*sum\b.*", "", text, flags=re.IGNORECASE | re.DOTALL)
+        # Strip email threading noise (e.g. "Responder | Responder todos | Reenviar")
+        text = re.sub(r"\bresponder\s+todos\b.*", "", text, flags=re.IGNORECASE | re.DOTALL)
         text = text.lower()
         tokens = re.findall(r"[a-z\u00e1\u00e9\u00ed\u00f3\u00fa\u00f1\u00fc]+", text)
         return [t for t in tokens if len(t) > 2]
