@@ -227,6 +227,14 @@ EXCLUDED_NGRAMS = {
     # ── Geographic / ISP noise ──
     "caba argentina", "piso barrio",
     "avasmx slo int", "slo int fibertel", "int fibertel com",
+    # ── Courtesy / closing phrases ──
+    "dia hoy", "día hoy",
+    "aguardo sus comentarios", "quedamos atentos sus",
+    "unidad gestion tributaria", "unidad gestión tributaria",
+    # ── Trigramas promovidos a bigramas (se excluye el trigrama para que el bigrama no sea demotado) ──
+    "las declaraciones juradas",
+    "del mes enero",
+    "del convenio multilateral",
     # ── Deloitte / Tohmatsu (any n-gram with poison words also caught by code) ──
     "member firm", "deloitte member", "deloitte firm",
     "global network", "member firm deloitte",
