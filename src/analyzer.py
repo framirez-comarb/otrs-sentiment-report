@@ -131,6 +131,36 @@ NGRAM_POISON_WORDS = {"deloitte", "dttl", "deloite", "member", "firm", "image", 
                       "provide", "separate", "refers", "related", "tmf",
                       "verein", "swiss", "audit", "advisory"}
 
+# English-only words: words that are English but not Spanish.
+# Any n-gram containing one of these words will be discarded.
+# Words that exist in both languages (e.g. "no", "a", "me") are intentionally excluded.
+ENGLISH_ONLY_WORDS = set((
+    # ── Common English function/content words ──
+    "about above after again against all along already also although always among "
+    "another any apart away back because been before behind below between both "
+    "came close come does doing done down during each even every everything "
+    "few further give goes going got had has have here him his how "
+    "into just keep knew know later less like little look make might "
+    "most much must need never off often once only other our out own "
+    "past put rather right same see seem she should since some something "
+    "soon still such take than that the their them then there these they "
+    "this those through time too two under until upon use used very "
+    "was way well were what when where which while who why will with "
+    "would you your "
+    # ── System / email / tech jargon ──
+    "system host server network postmaster mailer daemon noreply bounce "
+    "inbox outbox draft spam phishing query request response status "
+    "account access login password install configure setup connect disconnect "
+    "enable disable allow deny block filter scan debug log restart reload "
+    "upgrade version "
+    # ── Email footer / bounce / error messages ──
+    "sorry inform please thank send receive forward reply subject "
+    "attachment include problem further assistance undeliverable "
+    "destination address relay accepted unable delivery failed failure "
+    "refused rejected returned bounce permanent temporary "
+    "emeequis "
+).split())
+
 # ══════════════════════════════════════════════════════════════
 #  Intent classification keywords/patterns
 # ══════════════════════════════════════════════════════════════
@@ -316,6 +346,8 @@ class IntentClassifier:
                 w1, w2 = words[i], words[i + 1]
                 if w1 in NGRAM_POISON_WORDS or w2 in NGRAM_POISON_WORDS:
                     continue
+                if self._contains_english_word([w1, w2]):
+                    continue
                 bigram = w1 + " " + w2
                 if self._is_excluded_ngram(bigram):
                     continue
@@ -326,6 +358,8 @@ class IntentClassifier:
             for i in range(len(words) - 2):
                 w1, w2, w3 = words[i], words[i + 1], words[i + 2]
                 if w1 in NGRAM_POISON_WORDS or w2 in NGRAM_POISON_WORDS or w3 in NGRAM_POISON_WORDS:
+                    continue
+                if self._contains_english_word([w1, w2, w3]):
                     continue
                 trigram = w1 + " " + w2 + " " + w3
                 if self._is_excluded_ngram(trigram):
@@ -437,6 +471,11 @@ class IntentClassifier:
         ]
 
         return {"image_b64": b64, "top_bigrams": top_bigrams, "top_trigrams": top_trigrams}
+
+    @staticmethod
+    def _contains_english_word(words):
+        """Return True if any word in the list is an English-only word."""
+        return any(w in ENGLISH_ONLY_WORDS for w in words)
 
     @staticmethod
     def _normalize_accent(text):
