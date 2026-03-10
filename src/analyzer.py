@@ -90,6 +90,113 @@ STOPWORDS_ES = set((
     # ── Other noise ──
     "image png image image jpg image gif "
     "presiona ctrl "
+    # ── Geographic / ISP / brand noise ──
+    "catalinas emeequis fibertel avasmax avasmx "
+    # ── Common Spanish verb conjugations (reduce verb noise in word cloud) ──
+    # poder
+    "puedo puede pueden podemos pudo podria podrian pudimos pudieron "
+    # tener
+    "tengo tiene tienen tenemos tenia teniamos tuvo tuvimos tuvieron tendra tendras tendre tendria "
+    # hacer
+    "hago hace hacen hacemos hizo hicimos hicieron haria "
+    # querer
+    "quiero quiere quieren queremos queria querian quiso quisiera "
+    # necesitar
+    "necesito necesita necesitan necesitamos necesitaba "
+    # solicitar
+    "solicito solicita solicitan solicitamos solicite solicito solicitamos "
+    # realizar
+    "realizo realiza realizan realizamos realice realizo "
+    # ingresar
+    "ingreso ingresa ingresan ingrese "
+    # acceder
+    "accedo accede acceden accedi "
+    # verificar
+    "verifico verifica verifican verifique "
+    # completar
+    "completo completa completan complete "
+    # generar
+    "genero genera generan genere "
+    # presentar
+    "presento presenta presentan presente "
+    # actualizar
+    "actualizo actualiza actualizan actualice "
+    # descargar
+    "descargo descarga descargan descargue "
+    # cargar
+    "cargo carga cargan cargue "
+    # encontrar
+    "encuentro encuentra encuentran encontre encontramos "
+    # dar
+    "doy dio damos dieron daba daban dare daria "
+    # ver
+    "veo vemos vio vieron veia veian vere veria "
+    # saber
+    "sabe saben sabia sabian supo supimos supieron "
+    # salir
+    "salgo sale salen sali salimos salieron "
+    # seguir
+    "sigo sigue siguen segui seguimos siguieron "
+    # poner
+    "pongo pone ponen puso pusimos pusieron pondre "
+    # venir
+    "vengo viene vienen vino vinimos vinieron "
+    # llevar
+    "llevo lleva llevan lleve llevamos llevaron "
+    # decir
+    "digo dice dicen dijo dijimos dijeron diria "
+    # ir
+    "voy van iba iban fue fuimos fui "
+    # pasar
+    "paso pasa pasan pase pasamos pasaron pasaba "
+    # llegar
+    "llego llega llegan llegue llegamos llegaron "
+    # tratar
+    "trato trata tratan trate tratamos trataron "
+    # buscar
+    "busco busca buscan busque buscamos buscaron "
+    # escribir
+    "escribo escribe escriben escribi escribimos escribieron "
+    # pedir
+    "pido pide piden pedi pedimos pidieron "
+    # recibir
+    "recibo recibe reciben recibi recibimos recibieron "
+    # esperar
+    "espero espera esperan espere esperamos esperaron "
+    # indicar
+    "indico indica indican indique indicamos indicaron "
+    # resolver
+    "resuelvo resuelve resuelven resolvi resolvimos resolvieron "
+    # abrir
+    "abro abre abren abri abrimos abrieron "
+    # cerrar
+    "cierro cierra cierran cerre cerramos cerraron "
+    # cambiar
+    "cambio cambia cambian cambie cambiamos cambiaron "
+    # mostrar
+    "muestro muestra muestran mostre mostramos mostraron "
+    # aparecer
+    "aparece aparecen apareci aparecimos aparecieron "
+    # permitir
+    "permito permite permiten permiti permitimos permitieron "
+    # intentar
+    "intento intenta intentan intente intentamos intentaron "
+    # obtener
+    "obtengo obtiene obtienen obtuve obtuvimos obtuvieron "
+    # enviar (extra forms)
+    "envio envia envian envie enviamos enviaron "
+    # comunicar
+    "comunico comunica comunican comunique comunicamos "
+    # registrar
+    "registro registra registran registre registramos "
+    # configurar
+    "configuro configura configuran configure configuramos "
+    # adjuntar
+    "adjunto adjunta adjuntan adjunte adjuntamos "
+    # agregar
+    "agrego agrega agregan agregue agregamos "
+    # eliminar
+    "elimino elimina eliminan elimine eliminamos "
 ).split())
 
 # Excluded n-gram phrases (lowercased)
@@ -117,6 +224,9 @@ EXCLUDED_NGRAMS = {
     # ── Names / places ──
     "federico fernandez","federico","fernandez",
     "della paolera", "della", "paolera",
+    # ── Geographic / ISP noise ──
+    "caba argentina", "piso barrio",
+    "avasmx slo int", "slo int fibertel", "int fibertel com",
     # ── Deloitte / Tohmatsu (any n-gram with poison words also caught by code) ──
     "member firm", "deloitte member", "deloitte firm",
     "global network", "member firm deloitte",
@@ -132,7 +242,8 @@ NGRAM_POISON_WORDS = {"deloitte", "dttl", "deloite", "member", "firm", "image", 
                       "provide", "separate", "refers", "related", "tmf",
                       "verein", "swiss", "audit", "advisory",
                       "della", "paolera",
-                      "cono", "sur", "catalinas"}
+                      "cono", "sur", "catalinas",
+                      "emeequis", "fibertel", "avasmax", "avasmx", "slo", "int", "com"}
 
 # English-only words: words that are English but not Spanish.
 # Any n-gram containing one of these words will be discarded.
