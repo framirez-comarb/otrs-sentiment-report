@@ -158,7 +158,22 @@ ENGLISH_ONLY_WORDS = set((
     "attachment include problem further assistance undeliverable "
     "destination address relay accepted unable delivery failed failure "
     "refused rejected returned bounce permanent temporary "
-    "emeequis "
+    # ── Legal / corporate / Deloitte footers ──
+    "rights reserved copyright confidential disclaimer intended recipient "
+    "regards sincerely best kind dear sent received "
+    "certain respective respectively learn terms conditions apply applicable "
+    "registered office group independent independently operate operates operating "
+    "practice practices practitioner practitioners global network entity entities "
+    "legal consulting tax "
+    # ── File / encoding / URLs ──
+    "jpeg bmp svg doc docx xls xlsx csv txt rtf zip exe dll sys "
+    "bat cmd xml json yaml css ftp smtp imap pop ssl tls dns url "
+    "uri api div span class style font size color width height content "
+    "type charset utf encoding "
+    # ── OS / browsers ──
+    "windows linux mac android ios chrome firefox safari edge opera "
+    # ── Keyboard ──
+    "alt enter delete backspace insert "
 ).split())
 
 # ══════════════════════════════════════════════════════════════
