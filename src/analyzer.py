@@ -131,7 +131,8 @@ NGRAM_POISON_WORDS = {"deloitte", "dttl", "deloite", "member", "firm", "image", 
                       "touche", "tohmatsu", "limited", "services", "clients",
                       "provide", "separate", "refers", "related", "tmf",
                       "verein", "swiss", "audit", "advisory",
-                      "della", "paolera"}
+                      "della", "paolera",
+                      "cono", "sur", "catalinas"}
 
 # English-only words: words that are English but not Spanish.
 # Any n-gram containing one of these words will be discarded.
@@ -525,6 +526,8 @@ class IntentClassifier:
         text = re.sub(r"\batte\.?\s*sum\b.*", "", text, flags=re.IGNORECASE | re.DOTALL)
         # Strip email threading noise (e.g. "Responder | Responder todos | Reenviar")
         text = re.sub(r"\bresponder\s+todos\b.*", "", text, flags=re.IGNORECASE | re.DOTALL)
+        # Strip environmental disclaimer boilerplate
+        text = re.sub(r"\bantes de imprimir\b.*?\bambiente\b", "", text, flags=re.IGNORECASE | re.DOTALL)
         text = text.lower()
         tokens = re.findall(r"[a-z\u00e1\u00e9\u00ed\u00f3\u00fa\u00f1\u00fc]+", text)
         return [t for t in tokens if len(t) > 2]
