@@ -114,8 +114,9 @@ EXCLUDED_NGRAMS = {
     "ayuda comision arbitral", "arbitral del convenio",
     # ── Email threading ──
     "responder todos", "todos responder", "responder todos responder",
-    # ── Names ──
+    # ── Names / places ──
     "federico fernandez","federico","fernandez",
+    "della paolera", "della", "paolera",
     # ── Deloitte / Tohmatsu (any n-gram with poison words also caught by code) ──
     "member firm", "deloitte member", "deloitte firm",
     "global network", "member firm deloitte",
@@ -129,7 +130,8 @@ NGRAM_POISON_WORDS = {"deloitte", "dttl", "deloite", "member", "firm", "image", 
                       "jpg", "gif", "ctrl", "shift", "cid", "src", "href",
                       "touche", "tohmatsu", "limited", "services", "clients",
                       "provide", "separate", "refers", "related", "tmf",
-                      "verein", "swiss", "audit", "advisory"}
+                      "verein", "swiss", "audit", "advisory",
+                      "della", "paolera"}
 
 # English-only words: words that are English but not Spanish.
 # Any n-gram containing one of these words will be discarded.
@@ -156,8 +158,12 @@ ENGLISH_ONLY_WORDS = set((
     # ── Email footer / bounce / error messages ──
     "sorry inform please thank send receive forward reply subject "
     "attachment include problem further assistance undeliverable "
-    "destination address relay accepted unable delivery failed failure "
+    "destination address relay accepted unable delivery delivered failed failure "
     "refused rejected returned bounce permanent temporary "
+    "message messages report reports "
+    # ── Proper nouns / brands / languages used as English identifiers ──
+    "marketplace spanish latin english french german italian portuguese "
+    "della paolera "
     # ── Legal / corporate / Deloitte footers ──
     "rights reserved copyright confidential disclaimer intended recipient "
     "regards sincerely best kind dear sent received "
@@ -353,7 +359,7 @@ class IntentClassifier:
 
             # Unigrams
             for w in words:
-                if w not in STOPWORDS_ES:
+                if w not in STOPWORDS_ES and w not in ENGLISH_ONLY_WORDS:
                     unigram_freq[w] += 1
 
             # Bigrams
