@@ -44,7 +44,7 @@ STOPWORDS_ES = set((
     "mailto http https www com gob html org net php asp aspx "
     "enviar enviado mail correo email mensaje asunto "
     # ── Domain-specific exclusions ──
-    "comarb sifere ddjj "
+    "comarb sifere "
     "contribuyente contribuyentes del dato datos cuit cuits contacto "
     # ── SUM footer signature (Atte. SUM - Sistema Unificado de Mesa de Ayuda) ──
     "atte sum unificado "
@@ -249,7 +249,7 @@ EXCLUDED_NGRAMS = {
 LEADING_ARTICLES = {"el", "la", "los", "las", "un", "una", "unos", "unas"}
 
 # Words excluded as unigrams but still allowed within bigrams/trigrams (e.g. "santa fe")
-UNIGRAM_ONLY_EXCLUSIONS = {"santa"}
+UNIGRAM_ONLY_EXCLUSIONS = {"santa", "ddjj"}
 
 # Bigrams that must never be demoted by the trigram-absorption logic
 PROTECTED_BIGRAMS = {"nuevos coeficientes", "declaracion jurada", "declaración jurada"}
