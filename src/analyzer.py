@@ -91,7 +91,9 @@ STOPWORDS_ES = set((
     "image png image image jpg image gif "
     "presiona ctrl "
     # ── Geographic / ISP / brand noise ──
-    "catalinas emeequis fibertel avasmax avasmx "
+    "catalinas emeequis fibertel avasmax avasmx caba "
+    # ── Common noisy unigrams ──
+    "dias "
     # ── Common Spanish verb conjugations (reduce verb noise in word cloud) ──
     # poder
     "puedo puede pueden podemos pudo podria podrian pudimos pudieron "
@@ -229,7 +231,7 @@ EXCLUDED_NGRAMS = {
     "avasmx slo int", "slo int fibertel", "int fibertel com",
     # ── Courtesy / closing phrases ──
     "dia hoy", "día hoy",
-    "aguardo sus comentarios", "quedamos atentos sus",
+    "quedamos atentos", "aguardo sus comentarios", "quedamos atentos sus",
     "unidad gestion tributaria", "unidad gestión tributaria",
     # ── Trigramas promovidos a bigramas (se excluye el trigrama para que el bigrama no sea demotado) ──
     "las declaraciones juradas",
@@ -257,7 +259,8 @@ NGRAM_POISON_WORDS = {"deloitte", "dttl", "deloite", "member", "firm", "image", 
                       "verein", "swiss", "audit", "advisory",
                       "della", "paolera",
                       "cono", "sur", "catalinas",
-                      "emeequis", "fibertel", "avasmax", "avasmx", "slo", "int", "com"}
+                      "emeequis", "fibertel", "avasmax", "avasmx", "slo", "int", "com",
+                      "outlook", "olc", "namprd"}
 
 # English-only words: words that are English but not Spanish.
 # Any n-gram containing one of these words will be discarded.
@@ -290,6 +293,8 @@ ENGLISH_ONLY_WORDS = set((
     # ── Proper nouns / brands / languages used as English identifiers ──
     "marketplace spanish latin english french german italian portuguese "
     "della paolera "
+    # ── Email server / routing headers ──
+    "protection prod "
     # ── Legal / corporate / Deloitte footers ──
     "rights reserved copyright confidential disclaimer intended recipient "
     "regards sincerely best kind dear sent received "
@@ -389,17 +394,16 @@ class IntentClassifier:
     def analyze_tickets(self, tickets):
         total = len(tickets)
         for i, ticket in enumerate(tickets, 1):
-            text = ticket.get("user_message_body", "") or ticket.get("first_article_body", "")
+            body = ticket.get("user_message_body", "") or ticket.get("first_article_body", "")
             title = ticket.get("title", "") or ""
-            if title:
-                text = title + "\n" + text
+            text = (title + "\n" + body) if title else body
             if not text or len(text.strip()) < 10:
                 ticket["intent"] = "INDETERMINADO"
                 ticket["intent_label"] = "Indeterminado"
                 ticket["confidence"] = 0.0
                 log.info("  [%d/%d] Empty/short -> Indeterminado", i, total)
                 continue
-            result = self._classify_intent(text)
+            result = self._classify_intent(body, title)
             ticket["intent"] = result["intent"]
             ticket["intent_label"] = result["intent_label"]
             ticket["confidence"] = result["confidence"]
@@ -407,7 +411,7 @@ class IntentClassifier:
                      result["intent_label"], result["confidence"])
         return tickets
 
-    def _classify_intent(self, text):
+    def _classify_intent(self, text, title=""):
         text_lower = text.lower()
         text_normalized = _normalize_text(text)
 
@@ -434,6 +438,26 @@ class IntentClassifier:
                 weight = 2 if " " in pattern else 1
                 reclamo_score += weight
                 reclamo_matches += 1
+
+        # Title is a strong intent signal — score it with double weight
+        if title:
+            title_lower = title.lower()
+            title_normalized = _normalize_text(title)
+            if "?" in title:
+                consulta_score += 4
+                consulta_matches += 1
+            for pattern in CONSULTA_PATTERNS:
+                pattern_norm = _normalize_text(pattern)
+                if pattern_norm in title_normalized or pattern in title_lower:
+                    weight = (2 if " " in pattern else 1) * 2
+                    consulta_score += weight
+                    consulta_matches += 1
+            for pattern in RECLAMO_PATTERNS:
+                pattern_norm = _normalize_text(pattern)
+                if pattern_norm in title_normalized or pattern in title_lower:
+                    weight = (2 if " " in pattern else 1) * 2
+                    reclamo_score += weight
+                    reclamo_matches += 1
 
         total_matches = consulta_matches + reclamo_matches
 
@@ -528,6 +552,10 @@ class IntentClassifier:
         unigram_freq = Counter({k: v for k, v in unigram_freq.items() if v >= 2})
         bigram_freq = Counter({k: v for k, v in bigram_freq.items() if v >= 2})
         trigram_freq = Counter({k: v for k, v in trigram_freq.items() if v >= 2})
+
+        # ── Merge accent variants (e.g. "declaracion jurada" + "declaración jurada") ──
+        bigram_freq = self._merge_accent_variants(bigram_freq)
+        trigram_freq = self._merge_accent_variants(trigram_freq)
 
         # ── Deduplication: demote unigrams absorbed by frequent n-grams ──
         words_in_ngrams = Counter()
@@ -638,6 +666,17 @@ class IntentClassifier:
         """Strip accents for comparison."""
         nfkd = unicodedata.normalize("NFKD", text)
         return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+    def _merge_accent_variants(self, freq: Counter) -> Counter:
+        """Merge n-gram variants that differ only in accents, keeping the accented form."""
+        norm_to_canonical: dict = {}
+        merged: Counter = Counter()
+        for term, count in freq.most_common():
+            norm = self._normalize_accent(term)
+            if norm not in norm_to_canonical:
+                norm_to_canonical[norm] = term  # prefer accented form (seen first = higher freq)
+            merged[norm_to_canonical[norm]] += count
+        return merged
 
     def _is_excluded_ngram(self, ngram):
         """Check if an n-gram matches EXCLUDED_NGRAMS (accent-insensitive)."""
