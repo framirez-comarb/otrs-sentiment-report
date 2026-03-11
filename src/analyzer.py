@@ -91,9 +91,9 @@ STOPWORDS_ES = set((
     "image png image image jpg image gif "
     "presiona ctrl "
     # ── Geographic / ISP / brand noise ──
-    "catalinas emeequis fibertel avasmax avasmx caba "
+    "catalinas emeequis fibertel avasmax avasmx caba santa america "
     # ── Common noisy unigrams ──
-    "dias "
+    "dias días outlook bps "
     # ── Common Spanish verb conjugations (reduce verb noise in word cloud) ──
     # poder
     "puedo puede pueden podemos pudo podria podrian pudimos pudieron "
@@ -331,6 +331,7 @@ CONSULTA_PATTERNS = [
     "instrucciones",
     "consultar", "consulto", "consultas", "consultamos",
     "consultando", "consultaba", "consultaría",
+    "inconveniente", "inconvenientes",
 ]
 
 RECLAMO_PATTERNS = [
@@ -339,6 +340,8 @@ RECLAMO_PATTERNS = [
     "no anda", "no carga", "tira error", "pantalla en blanco",
     "no responde", "se cuelga", "devuelve error", "sistema caído",
     "sistema caido", "no se puede",
+    "anda mal", "funciona mal", "mal funcionamiento",
+    "funcionamiento incorrecto", "no funciono", "no funcionó",
     # Single-word (weight 1)
     "error", "falla", "problema", "reclamo", "queja", "urgente",
     "imposible", "bug", "incorrecto", "mal",
