@@ -93,7 +93,7 @@ STOPWORDS_ES = set((
     # ── Geographic / ISP / brand noise ──
     "catalinas emeequis fibertel avasmax avasmx caba america "
     # ── Common noisy unigrams ──
-    "dias días outlook bps "
+    "dias días outlook bps archivo "
     # ── Common Spanish verb conjugations (reduce verb noise in word cloud) ──
     # poder
     "puedo puede pueden podemos pudo podria podrian pudimos pudieron "
@@ -492,6 +492,13 @@ class IntentClassifier:
         # Staff response starting with "Estimado/a <nombre>"
         if re.match(r"estimad[oa]/?a?\s+\w", body_l):
             return "NO_APLICA", "No aplica"
+
+        # Title-based direct classification
+        title_norm = _normalize_text(title_l)
+        if re.search(r"\bconsulta\b", title_norm):
+            return "CONSULTA", "Consulta/Duda"
+        if re.search(r"\b(error|problema|problemas|mal funcionamiento|inconveniente|inconvenientes)\b", title_norm):
+            return "RECLAMO", "Reclamo/Error"
 
         return None, None
 
