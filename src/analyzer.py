@@ -402,9 +402,18 @@ STAFF_PATTERNS = [
 
 STAFF_THRESHOLD = 2  # Minimum pattern matches to classify as staff
 
+# ── Discard filter: tickets excluded entirely before classification ──
+_DISCARD_TITLE_SUBSTRINGS = (
+    "undelivered mail returned to sender",
+)
+_DISCARD_BODY_SUBSTRINGS = (
+    "merged ticket",
+)
+_DISCARD_BODY_EXACT = {"", "file", "image"}
+
 # ── Pre-classification: tickets that should be marked NO_APLICA ──
 _NO_APLICA_SUBSTRINGS = [
-    # Bounces / mailer-daemon
+    # Bounces / mailer-daemon (other than the discarded case above)
     "undelivered mail", "mail system", "could not be delivered",
     # Spam / phishing
     "gradas tribunas escenarios", "business proposal",
@@ -419,14 +428,6 @@ _NO_APLICA_COMBOS = [
 ]
 _NO_APLICA_TITLE_EXACT = {"merged ticket"}
 _NO_APLICA_TITLE_PREFIXES = ("comarb - notas entrantes",)
-
-# ── SIN_INFO: short acknowledgement/greeting — no useful intent ──
-_SIN_INFO_PHRASES = {
-    "ok", "oka", "bueno", "perfecto", "entendido",
-    "gracias", "muchas gracias",
-    "buen dia", "buenos dias", "buenos días",
-    "de acuerdo", "dale", "listo",
-}
 
 
 def _normalize_text(text):
@@ -455,6 +456,19 @@ def is_staff_response(text):
 class IntentClassifier:
 
     @staticmethod
+    def _should_discard(title: str, body: str) -> bool:
+        """Return True if ticket should be excluded entirely from the report."""
+        title_l = title.lower().strip()
+        body_l = body.lower().strip()
+        if body_l in _DISCARD_BODY_EXACT:
+            return True
+        if any(s in title_l for s in _DISCARD_TITLE_SUBSTRINGS):
+            return True
+        if any(s in body_l for s in _DISCARD_BODY_SUBSTRINGS):
+            return True
+        return False
+
+    @staticmethod
     def _pre_classify(title: str, body: str):
         """Return (intent, label) if ticket should be pre-classified, else (None, None)."""
         title_l = title.lower().strip()
@@ -479,18 +493,16 @@ class IntentClassifier:
         if re.match(r"estimad[oa]/?a?\s+\w", body_l):
             return "NO_APLICA", "No aplica"
 
-        # Empty / file-only body
-        if body_l in ("", "file", "image"):
-            return "NO_APLICA", "No aplica"
-
-        # SIN_INFO: body is only a short greeting / acknowledgement
-        body_clean = re.sub(r"[^\w\s]", "", _normalize_text(body_l)).strip()
-        if body_clean in _SIN_INFO_PHRASES or body_l.strip(".,! \n") in _SIN_INFO_PHRASES:
-            return "SIN_INFO", "Sin info suficiente"
-
         return None, None
 
     def analyze_tickets(self, tickets):
+        tickets = [
+            t for t in tickets
+            if not self._should_discard(
+                t.get("title", "") or "",
+                t.get("user_message_body", "") or t.get("first_article_body", "") or "",
+            )
+        ]
         total = len(tickets)
         for i, ticket in enumerate(tickets, 1):
             body = ticket.get("user_message_body", "") or ticket.get("first_article_body", "")
@@ -589,14 +601,13 @@ class IntentClassifier:
             return {
                 "total": 0, "total_all": 0,
                 "consulta": 0, "reclamo": 0, "indeterminado": 0,
-                "no_aplica": 0, "sin_info": 0,
+                "no_aplica": 0,
                 "consulta_pct": 0, "reclamo_pct": 0, "indeterminado_pct": 0,
-                "no_aplica_pct": 0, "sin_info_pct": 0,
+                "no_aplica_pct": 0,
             }
         counts = Counter(t.get("intent", "INDETERMINADO") for t in tickets)
         no_aplica = counts.get("NO_APLICA", 0)
-        sin_info = counts.get("SIN_INFO", 0)
-        total_classified = total_all - no_aplica - sin_info
+        total_classified = total_all - no_aplica
         base = total_classified or 1
         return {
             "total": total_classified,
@@ -605,12 +616,10 @@ class IntentClassifier:
             "reclamo": counts.get("RECLAMO", 0),
             "indeterminado": counts.get("INDETERMINADO", 0),
             "no_aplica": no_aplica,
-            "sin_info": sin_info,
             "consulta_pct": round(counts.get("CONSULTA", 0) / base * 100, 1),
             "reclamo_pct": round(counts.get("RECLAMO", 0) / base * 100, 1),
             "indeterminado_pct": round(counts.get("INDETERMINADO", 0) / base * 100, 1),
             "no_aplica_pct": round(no_aplica / total_all * 100, 1),
-            "sin_info_pct": round(sin_info / total_all * 100, 1),
         }
 
     # ══════════════════════════════════════════════════════════════
