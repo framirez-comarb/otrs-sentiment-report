@@ -249,7 +249,7 @@ EXCLUDED_NGRAMS = {
 LEADING_ARTICLES = {"el", "la", "los", "las", "un", "una", "unos", "unas"}
 
 # Words excluded as unigrams but still allowed within bigrams/trigrams (e.g. "santa fe")
-UNIGRAM_ONLY_EXCLUSIONS = {"santa", "ddjj"}
+UNIGRAM_ONLY_EXCLUSIONS = {"santa"}
 
 # Bigrams that must never be demoted by the trigram-absorption logic
 PROTECTED_BIGRAMS = {"nuevos coeficientes", "declaracion jurada", "declaración jurada"}
