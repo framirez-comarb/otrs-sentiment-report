@@ -15,12 +15,16 @@ INTENT_COLORS = {
     "CONSULTA": "#00b894",
     "RECLAMO": "#e17055",
     "INDETERMINADO": "#636e72",
+    "NO_APLICA": "#b2bec3",
+    "SIN_INFO": "#a29bfe",
 }
 
 INTENT_ICONS = {
-    "CONSULTA": "&#x2753;",     # question mark
-    "RECLAMO": "&#x26A0;",      # warning sign
+    "CONSULTA": "&#x2753;",      # question mark
+    "RECLAMO": "&#x26A0;",       # warning sign
     "INDETERMINADO": "&#x2796;", # heavy minus
+    "NO_APLICA": "&#x274C;",     # cross mark
+    "SIN_INFO": "&#x1F4AC;",     # speech bubble
 }
 
 
@@ -48,17 +52,24 @@ class ReportGenerator:
             date_from=search_params.get("date_from", ""),
             date_to=search_params.get("date_to", ""),
             total=intent_summary.get("total", 0),
+            total_all=intent_summary.get("total_all", intent_summary.get("total", 0)),
             consulta=intent_summary.get("consulta", 0),
             reclamo=intent_summary.get("reclamo", 0),
             indeterminado=intent_summary.get("indeterminado", 0),
+            no_aplica=intent_summary.get("no_aplica", 0),
+            sin_info=intent_summary.get("sin_info", 0),
             consulta_pct=intent_summary.get("consulta_pct", 0),
             reclamo_pct=intent_summary.get("reclamo_pct", 0),
             indeterminado_pct=intent_summary.get("indeterminado_pct", 0),
+            no_aplica_pct=intent_summary.get("no_aplica_pct", 0),
+            sin_info_pct=intent_summary.get("sin_info_pct", 0),
             wordcloud_b64=wordcloud_b64,
             ticket_rows=ticket_rows,
             chart_consulta=intent_summary.get("consulta", 0),
             chart_reclamo=intent_summary.get("reclamo", 0),
             chart_indeterminado=intent_summary.get("indeterminado", 0),
+            chart_no_aplica=intent_summary.get("no_aplica", 0),
+            chart_sin_info=intent_summary.get("sin_info", 0),
             timeline_charts=timeline_charts,
             ngram_lists=ngram_lists,
         )
@@ -249,6 +260,8 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
     --accent-orange: #e17055;
     --accent-gray: #636e72;
     --accent-blue: #3b82f6;
+    --accent-no-aplica: #b2bec3;
+    --accent-sin-info: #a29bfe;
     --border: #1e293b;
     --radius: 12px;
   }}
@@ -375,6 +388,8 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
   .stat-card.consulta .stat-value {{ color: var(--accent-teal); }}
   .stat-card.reclamo .stat-value {{ color: var(--accent-orange); }}
   .stat-card.indeterminado .stat-value {{ color: var(--accent-gray); }}
+  .stat-card.no-aplica .stat-value {{ color: var(--accent-no-aplica); }}
+  .stat-card.sin-info .stat-value {{ color: var(--accent-sin-info); }}
 
   /* ── Chart Section ── */
   .section {{
@@ -926,7 +941,8 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
   <div class="stats-grid">
     <div class="stat-card total">
       <div class="stat-value">{total}</div>
-      <div class="stat-label">Total tickets</div>
+      <div class="stat-label">Total analizados</div>
+      <div class="stat-pct">{total_all} total</div>
     </div>
     <div class="stat-card consulta">
       <div class="stat-value">{consulta}</div>
@@ -942,6 +958,16 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
       <div class="stat-value">{indeterminado}</div>
       <div class="stat-label">Indeterminado</div>
       <div class="stat-pct">{indeterminado_pct}%</div>
+    </div>
+    <div class="stat-card no-aplica">
+      <div class="stat-value">{no_aplica}</div>
+      <div class="stat-label">No aplica</div>
+      <div class="stat-pct">{no_aplica_pct}%</div>
+    </div>
+    <div class="stat-card sin-info">
+      <div class="stat-value">{sin_info}</div>
+      <div class="stat-label">Sin info suficiente</div>
+      <div class="stat-pct">{sin_info_pct}%</div>
     </div>
   </div>
 
@@ -965,9 +991,17 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
             stroke="var(--accent-gray)" stroke-width="24"
             stroke-dasharray="0 565.5"
             stroke-linecap="round"/>
+          <circle id="arc-no-aplica" cx="110" cy="110" r="90" fill="none"
+            stroke="var(--accent-no-aplica)" stroke-width="24"
+            stroke-dasharray="0 565.5"
+            stroke-linecap="round"/>
+          <circle id="arc-sin-info" cx="110" cy="110" r="90" fill="none"
+            stroke="var(--accent-sin-info)" stroke-width="24"
+            stroke-dasharray="0 565.5"
+            stroke-linecap="round"/>
         </svg>
         <div class="donut-center">
-          <div class="big-num">{total}</div>
+          <div class="big-num">{total_all}</div>
           <div class="label">tickets</div>
         </div>
       </div>
@@ -997,6 +1031,22 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
             </div>
           </div>
         </div>
+        <div class="bar-row">
+          <span class="bar-label">No aplica</span>
+          <div class="bar-track">
+            <div class="bar-fill" style="width: {no_aplica_pct}%; background: var(--accent-no-aplica);">
+              {no_aplica} ({no_aplica_pct}%)
+            </div>
+          </div>
+        </div>
+        <div class="bar-row">
+          <span class="bar-label">Sin info suf.</span>
+          <div class="bar-track">
+            <div class="bar-fill" style="width: {sin_info_pct}%; background: var(--accent-sin-info);">
+              {sin_info} ({sin_info_pct}%)
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="chart-legend">
@@ -1014,6 +1064,16 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
           <div class="legend-dot" style="background: var(--accent-gray)"></div>
           <span class="legend-label">Indeterminado</span>
           <span class="legend-value">{indeterminado}</span>
+        </div>
+        <div class="legend-item">
+          <div class="legend-dot" style="background: var(--accent-no-aplica)"></div>
+          <span class="legend-label">No aplica</span>
+          <span class="legend-value">{no_aplica}</span>
+        </div>
+        <div class="legend-item">
+          <div class="legend-dot" style="background: var(--accent-sin-info)"></div>
+          <span class="legend-label">Sin info suf.</span>
+          <span class="legend-value">{sin_info}</span>
         </div>
       </div>
 
@@ -1044,6 +1104,8 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
         <button class="filter-btn" onclick="filterTickets('CONSULTA')">&#x2753; Consultas</button>
         <button class="filter-btn" onclick="filterTickets('RECLAMO')">&#x26A0; Reclamos</button>
         <button class="filter-btn" onclick="filterTickets('INDETERMINADO')">&#x2796; Indeterminados</button>
+        <button class="filter-btn" onclick="filterTickets('NO_APLICA')">&#x274C; No aplica</button>
+        <button class="filter-btn" onclick="filterTickets('SIN_INFO')">&#x1F4AC; Sin info</button>
         <button class="filter-btn" onclick="expandAll(true)" style="margin-left: auto;">Expandir todos</button>
         <button class="filter-btn" onclick="expandAll(false)">Colapsar todos</button>
       </div>
@@ -1063,19 +1125,25 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
 <script>
 // ── Donut chart animation ──
 (function() {{
-  const total = {total} || 1;
+  const total = {total_all} || 1;
   const consulta = {chart_consulta};
   const reclamo = {chart_reclamo};
   const indeterminado = {chart_indeterminado};
+  const noAplica = {chart_no_aplica};
+  const sinInfo = {chart_sin_info};
   const C = 2 * Math.PI * 90; // circumference
 
-  const consultaLen = (consulta / total) * C;
-  const reclamoLen = (reclamo / total) * C;
-  const indeterminadoLen = (indeterminado / total) * C;
+  const consultaLen     = (consulta     / total) * C;
+  const reclamoLen      = (reclamo      / total) * C;
+  const indeterminadoLen= (indeterminado/ total) * C;
+  const noAplicaLen     = (noAplica     / total) * C;
+  const sinInfoLen      = (sinInfo      / total) * C;
 
-  const arcConsulta = document.getElementById('arc-consulta');
-  const arcReclamo = document.getElementById('arc-reclamo');
+  const arcConsulta      = document.getElementById('arc-consulta');
+  const arcReclamo       = document.getElementById('arc-reclamo');
   const arcIndeterminado = document.getElementById('arc-indeterminado');
+  const arcNoAplica      = document.getElementById('arc-no-aplica');
+  const arcSinInfo       = document.getElementById('arc-sin-info');
 
   if (arcConsulta) {{
     arcConsulta.setAttribute('stroke-dasharray', consultaLen + ' ' + C);
@@ -1086,6 +1154,12 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
 
     arcIndeterminado.setAttribute('stroke-dasharray', indeterminadoLen + ' ' + C);
     arcIndeterminado.setAttribute('stroke-dashoffset', -(consultaLen + reclamoLen));
+
+    arcNoAplica.setAttribute('stroke-dasharray', noAplicaLen + ' ' + C);
+    arcNoAplica.setAttribute('stroke-dashoffset', -(consultaLen + reclamoLen + indeterminadoLen));
+
+    arcSinInfo.setAttribute('stroke-dasharray', sinInfoLen + ' ' + C);
+    arcSinInfo.setAttribute('stroke-dashoffset', -(consultaLen + reclamoLen + indeterminadoLen + noAplicaLen));
   }}
 }})();
 

@@ -335,6 +335,18 @@ CONSULTA_PATTERNS = [
     "consultar", "consulto", "consultas", "consultamos",
     "consultando", "consultaba", "consultaría",
     "inconveniente", "inconvenientes",
+    "necesito saber", "necesito que me informen",
+    "me podrían decir", "me podrian decir",
+    "si pueden decirme",
+    "me comunico por",
+    "baja retroactiva", "dar la baja", "darse de baja",
+    "dar de alta", "darse de alta",
+    "formato archivo",
+    "cómo se debe", "como se debe", "cómo debo", "como debo",
+    # Single-word (weight 1)
+    "solicito", "solicitamos", "solicitar",
+    "prórroga", "prorroga",
+    "tutorial",
 ]
 
 RECLAMO_PATTERNS = [
@@ -345,9 +357,27 @@ RECLAMO_PATTERNS = [
     "sistema caido", "no se puede",
     "anda mal", "funciona mal", "mal funcionamiento",
     "funcionamiento incorrecto", "no funciono", "no funcionó",
+    "sin funcionar", "no funciona correctamente",
+    "no pude", "no pudo", "no he podido", "no hemos podido",
+    "no nos permite", "no les permite",
+    "sigo sin poder", "seguimos sin poder",
+    "no está respondiendo", "no esta respondiendo",
+    "pérdida de tiempo", "perdida de tiempo",
+    "dejar constancia",
+    "super lento", "muy lento",
+    "no pude terminar",
+    "no me pasa", "no pasa",
+    "pago no registrado", "pago duplicado",
+    "no se acredita", "no se encuentra imputado",
+    "no se ve", "no se ven",
+    "excesivas demoras",
     # Single-word (weight 1)
     "error", "falla", "problema", "reclamo", "queja", "urgente",
     "imposible", "bug", "incorrecto", "mal",
+    "lento", "demora", "demoras",
+    "impidiendo", "impide",
+    "rechazada", "rechazado",
+    "caído", "caido",
 ]
 
 # ── Staff response detection patterns ──
@@ -371,6 +401,32 @@ STAFF_PATTERNS = [
 ]
 
 STAFF_THRESHOLD = 2  # Minimum pattern matches to classify as staff
+
+# ── Pre-classification: tickets that should be marked NO_APLICA ──
+_NO_APLICA_SUBSTRINGS = [
+    # Bounces / mailer-daemon
+    "undelivered mail", "mail system", "could not be delivered",
+    # Spam / phishing
+    "gradas tribunas escenarios", "business proposal",
+    "hacker profesional", "filtrado sus datos personales",
+    "mensajes entrantes pendientes",
+    "auditoria: empresa seleccionada", "auditoria empresa seleccionada",
+    "fiscalizacion programada", "fiscalización programada",
+]
+_NO_APLICA_COMBOS = [
+    ("saldo pendiente", "departamento de facturacion"),
+    ("pago acreditado", "mercado pago"),
+]
+_NO_APLICA_TITLE_EXACT = {"merged ticket"}
+_NO_APLICA_TITLE_PREFIXES = ("comarb - notas entrantes",)
+
+# ── SIN_INFO: short acknowledgement/greeting — no useful intent ──
+_SIN_INFO_PHRASES = {
+    "ok", "oka", "bueno", "perfecto", "entendido",
+    "gracias", "muchas gracias",
+    "buen dia", "buenos dias", "buenos días",
+    "de acuerdo", "dale", "listo",
+}
 
 
 def _normalize_text(text):
@@ -397,11 +453,58 @@ def is_staff_response(text):
 
 
 class IntentClassifier:
+
+    @staticmethod
+    def _pre_classify(title: str, body: str):
+        """Return (intent, label) if ticket should be pre-classified, else (None, None)."""
+        title_l = title.lower().strip()
+        body_l = body.lower().strip()
+        combined = title_l + " " + body_l
+
+        # Tickets internos
+        if title_l in _NO_APLICA_TITLE_EXACT:
+            return "NO_APLICA", "No aplica"
+        if any(title_l.startswith(p) for p in _NO_APLICA_TITLE_PREFIXES):
+            return "NO_APLICA", "No aplica"
+
+        # Bounces, spam, phishing
+        for pattern in _NO_APLICA_SUBSTRINGS:
+            if pattern in combined:
+                return "NO_APLICA", "No aplica"
+        for p1, p2 in _NO_APLICA_COMBOS:
+            if p1 in combined and p2 in combined:
+                return "NO_APLICA", "No aplica"
+
+        # Staff response starting with "Estimado/a <nombre>"
+        if re.match(r"estimad[oa]/?a?\s+\w", body_l):
+            return "NO_APLICA", "No aplica"
+
+        # Empty / file-only body
+        if body_l in ("", "file", "image"):
+            return "NO_APLICA", "No aplica"
+
+        # SIN_INFO: body is only a short greeting / acknowledgement
+        body_clean = re.sub(r"[^\w\s]", "", _normalize_text(body_l)).strip()
+        if body_clean in _SIN_INFO_PHRASES or body_l.strip(".,! \n") in _SIN_INFO_PHRASES:
+            return "SIN_INFO", "Sin info suficiente"
+
+        return None, None
+
     def analyze_tickets(self, tickets):
         total = len(tickets)
         for i, ticket in enumerate(tickets, 1):
             body = ticket.get("user_message_body", "") or ticket.get("first_article_body", "")
             title = ticket.get("title", "") or ""
+
+            # Pre-classification filter
+            pre_intent, pre_label = self._pre_classify(title, body)
+            if pre_intent:
+                ticket["intent"] = pre_intent
+                ticket["intent_label"] = pre_label
+                ticket["confidence"] = 0.0
+                log.info("  [%d/%d] Pre-classified -> %s", i, total, pre_label)
+                continue
+
             text = (title + "\n" + body) if title else body
             if not text or len(text.strip()) < 10:
                 ticket["intent"] = "INDETERMINADO"
@@ -481,18 +584,33 @@ class IntentClassifier:
             return {"intent": "INDETERMINADO", "intent_label": "Indeterminado", "confidence": 0.5}
 
     def get_summary(self, tickets):
-        total = len(tickets)
-        if total == 0:
-            return {"total": 0, "consulta": 0, "reclamo": 0, "indeterminado": 0}
+        total_all = len(tickets)
+        if total_all == 0:
+            return {
+                "total": 0, "total_all": 0,
+                "consulta": 0, "reclamo": 0, "indeterminado": 0,
+                "no_aplica": 0, "sin_info": 0,
+                "consulta_pct": 0, "reclamo_pct": 0, "indeterminado_pct": 0,
+                "no_aplica_pct": 0, "sin_info_pct": 0,
+            }
         counts = Counter(t.get("intent", "INDETERMINADO") for t in tickets)
+        no_aplica = counts.get("NO_APLICA", 0)
+        sin_info = counts.get("SIN_INFO", 0)
+        total_classified = total_all - no_aplica - sin_info
+        base = total_classified or 1
         return {
-            "total": total,
+            "total": total_classified,
+            "total_all": total_all,
             "consulta": counts.get("CONSULTA", 0),
             "reclamo": counts.get("RECLAMO", 0),
             "indeterminado": counts.get("INDETERMINADO", 0),
-            "consulta_pct": round(counts.get("CONSULTA", 0) / total * 100, 1),
-            "reclamo_pct": round(counts.get("RECLAMO", 0) / total * 100, 1),
-            "indeterminado_pct": round(counts.get("INDETERMINADO", 0) / total * 100, 1),
+            "no_aplica": no_aplica,
+            "sin_info": sin_info,
+            "consulta_pct": round(counts.get("CONSULTA", 0) / base * 100, 1),
+            "reclamo_pct": round(counts.get("RECLAMO", 0) / base * 100, 1),
+            "indeterminado_pct": round(counts.get("INDETERMINADO", 0) / base * 100, 1),
+            "no_aplica_pct": round(no_aplica / total_all * 100, 1),
+            "sin_info_pct": round(sin_info / total_all * 100, 1),
         }
 
     # ══════════════════════════════════════════════════════════════
