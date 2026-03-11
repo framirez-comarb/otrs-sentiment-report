@@ -243,6 +243,12 @@ EXCLUDED_NGRAMS = {
     "services clients please", "not provide services",
 }
 
+# Articles that disqualify a trigram when they appear as the first word
+LEADING_ARTICLES = {"el", "la", "los", "las", "un", "una", "unos", "unas"}
+
+# Bigrams that must never be demoted by the trigram-absorption logic
+PROTECTED_BIGRAMS = {"nuevos coeficientes", "declaracion jurada", "declaración jurada"}
+
 # Words that should be excluded from ANY n-gram they appear in
 NGRAM_POISON_WORDS = {"deloitte", "dttl", "deloite", "member", "firm", "image", "png",
                       "jpg", "gif", "ctrl", "shift", "cid", "src", "href",
@@ -318,6 +324,8 @@ CONSULTA_PATTERNS = [
     "consulta", "duda", "información", "informacion",
     "orientación", "orientacion", "procedimiento", "requisitos",
     "instrucciones",
+    "consultar", "consulto", "consultas", "consultamos",
+    "consultando", "consultaba", "consultaría",
 ]
 
 RECLAMO_PATTERNS = [
@@ -382,6 +390,9 @@ class IntentClassifier:
         total = len(tickets)
         for i, ticket in enumerate(tickets, 1):
             text = ticket.get("user_message_body", "") or ticket.get("first_article_body", "")
+            title = ticket.get("title", "") or ""
+            if title:
+                text = title + "\n" + text
             if not text or len(text.strip()) < 10:
                 ticket["intent"] = "INDETERMINADO"
                 ticket["intent_label"] = "Indeterminado"
@@ -498,6 +509,8 @@ class IntentClassifier:
             # Trigrams
             for i in range(len(words) - 2):
                 w1, w2, w3 = words[i], words[i + 1], words[i + 2]
+                if w1 in LEADING_ARTICLES:
+                    continue
                 if w1 in NGRAM_POISON_WORDS or w2 in NGRAM_POISON_WORDS or w3 in NGRAM_POISON_WORDS:
                     continue
                 if self._contains_english_word([w1, w2, w3]):
@@ -551,8 +564,10 @@ class IntentClassifier:
             if bi_count > 0 and tri_count >= bi_count * 0.75:
                 demoted_bigrams.add(bigram)
 
+        protected_normalized = {self._normalize_accent(p) for p in PROTECTED_BIGRAMS}
         for bigram in demoted_bigrams:
-            del bigram_freq[bigram]
+            if self._normalize_accent(bigram) not in protected_normalized:
+                del bigram_freq[bigram]
 
         if demoted_bigrams:
             log.info("Demoted %d bigrams absorbed by trigrams: %s",
