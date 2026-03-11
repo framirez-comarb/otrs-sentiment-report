@@ -91,7 +91,7 @@ STOPWORDS_ES = set((
     "image png image image jpg image gif "
     "presiona ctrl "
     # ── Geographic / ISP / brand noise ──
-    "catalinas emeequis fibertel avasmax avasmx caba santa america "
+    "catalinas emeequis fibertel avasmax avasmx caba america "
     # ── Common noisy unigrams ──
     "dias días outlook bps "
     # ── Common Spanish verb conjugations (reduce verb noise in word cloud) ──
@@ -247,6 +247,9 @@ EXCLUDED_NGRAMS = {
 
 # Articles that disqualify a trigram when they appear as the first word
 LEADING_ARTICLES = {"el", "la", "los", "las", "un", "una", "unos", "unas"}
+
+# Words excluded as unigrams but still allowed within bigrams/trigrams (e.g. "santa fe")
+UNIGRAM_ONLY_EXCLUSIONS = {"santa"}
 
 # Bigrams that must never be demoted by the trigram-absorption logic
 PROTECTED_BIGRAMS = {"nuevos coeficientes", "declaracion jurada", "declaración jurada"}
@@ -517,7 +520,7 @@ class IntentClassifier:
 
             # Unigrams
             for w in words:
-                if w not in STOPWORDS_ES and w not in ENGLISH_ONLY_WORDS:
+                if w not in STOPWORDS_ES and w not in ENGLISH_ONLY_WORDS and w not in UNIGRAM_ONLY_EXCLUSIONS:
                     unigram_freq[w] += 1
 
             # Bigrams

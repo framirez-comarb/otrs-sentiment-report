@@ -152,7 +152,7 @@ class ReportGenerator:
 
         max_day = max((d["count"] for d in by_day), default=1)
         day_bars = ""
-        for d in by_day:
+        for d in reversed(by_day):
             pct = d["count"] / max_day * 100
             short_date = d["date"][5:]
             day_bars += (
@@ -170,7 +170,7 @@ class ReportGenerator:
                        "06":"Jun","07":"Jul","08":"Ago","09":"Sep","10":"Oct",
                        "11":"Nov","12":"Dic"}
         month_bars = ""
-        for m in by_month:
+        for m in reversed(by_month):
             pct = m["count"] / max_month * 100
             parts = m["month"].split("-")
             label = "%s %s" % (month_names.get(parts[1], parts[1]), parts[0])
