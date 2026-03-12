@@ -405,29 +405,36 @@ STAFF_THRESHOLD = 2  # Minimum pattern matches to classify as staff
 # ── Discard filter: tickets excluded entirely before classification ──
 _DISCARD_TITLE_SUBSTRINGS = (
     "undelivered mail returned to sender",
+    # Spam / phishing / noise
+    "saldo pendiente",
+    "gradas tribunas escenarios",
+    "pago creditado", "creditado pago",
+    "tu compra fue aprobada",
+    "mensajes entrantes pendientes",
+    "filtrado sus datos personales",
+    "business proposal",
+    "hacker profesional",
+    "auditoria: empresa seleccionada", "auditoria empresa seleccionada",
+    "fiscalizacion programada",
+    # Internal
+    "comarb - notas entrantes",
 )
 _DISCARD_BODY_SUBSTRINGS = (
     "merged ticket",
+    # Bounces / mailer-daemon
+    "undelivered mail", "mail system", "could not be delivered",
 )
 _DISCARD_BODY_EXACT = {"", "file", "image"}
+_DISCARD_TITLE_EXACT = {"merged ticket"}
 
-# ── Pre-classification: tickets that should be marked NO_APLICA ──
-_NO_APLICA_SUBSTRINGS = [
-    # Bounces / mailer-daemon (other than the discarded case above)
-    "undelivered mail", "mail system", "could not be delivered",
-    # Spam / phishing
-    "gradas tribunas escenarios", "business proposal",
-    "hacker profesional", "filtrado sus datos personales",
-    "mensajes entrantes pendientes",
-    "auditoria: empresa seleccionada", "auditoria empresa seleccionada",
-    "fiscalizacion programada", "fiscalización programada",
-]
-_NO_APLICA_COMBOS = [
-    ("saldo pendiente", "departamento de facturacion"),
-    ("pago acreditado", "mercado pago"),
-]
-_NO_APLICA_TITLE_EXACT = {"merged ticket"}
-_NO_APLICA_TITLE_PREFIXES = ("comarb - notas entrantes",)
+# ── Force-classification by ticket number ──
+_FORCE_RECLAMO = {
+    "2026021210003485", "2026020410002787",
+    "2026011910001752",
+}
+_FORCE_CONSULTA = {
+    "2026021210001871",
+}
 
 
 def _normalize_text(text):
@@ -463,7 +470,12 @@ class IntentClassifier:
         # Staff responses: sender starts with "Sistema " (e.g. "Sistema SIFERE WEB")
         if sender.strip().lower().startswith("sistema "):
             return True
+        # Staff response starting with "Estimado/a <nombre>"
+        if re.match(r"estimad[oa]/?a?\s+\w", body_l):
+            return True
         if body_l in _DISCARD_BODY_EXACT:
+            return True
+        if title_l in _DISCARD_TITLE_EXACT:
             return True
         if any(s in title_l for s in _DISCARD_TITLE_SUBSTRINGS):
             return True
@@ -472,32 +484,16 @@ class IntentClassifier:
         return False
 
     @staticmethod
-    def _pre_classify(title: str, body: str):
+    def _pre_classify(title: str, body: str, ticket_number: str = ""):
         """Return (intent, label) if ticket should be pre-classified, else (None, None)."""
-        title_l = title.lower().strip()
-        body_l = body.lower().strip()
-        combined = title_l + " " + body_l
-
-        # Tickets internos
-        if title_l in _NO_APLICA_TITLE_EXACT:
-            return "NO_APLICA", "No aplica"
-        if any(title_l.startswith(p) for p in _NO_APLICA_TITLE_PREFIXES):
-            return "NO_APLICA", "No aplica"
-
-        # Bounces, spam, phishing
-        for pattern in _NO_APLICA_SUBSTRINGS:
-            if pattern in combined:
-                return "NO_APLICA", "No aplica"
-        for p1, p2 in _NO_APLICA_COMBOS:
-            if p1 in combined and p2 in combined:
-                return "NO_APLICA", "No aplica"
-
-        # Staff response starting with "Estimado/a <nombre>"
-        if re.match(r"estimad[oa]/?a?\s+\w", body_l):
-            return "NO_APLICA", "No aplica"
+        # Force-classification by ticket number
+        if ticket_number in _FORCE_RECLAMO:
+            return "RECLAMO", "Reclamo/Error"
+        if ticket_number in _FORCE_CONSULTA:
+            return "CONSULTA", "Consulta/Duda"
 
         # Title-based direct classification
-        title_norm = _normalize_text(title_l)
+        title_norm = _normalize_text(title.lower().strip())
         if re.search(r"\bconsulta\b", title_norm):
             return "CONSULTA", "Consulta/Duda"
         if re.search(r"\b(error|problema|problemas|mal funcionamiento|inconveniente|inconvenientes)\b", title_norm):
@@ -520,7 +516,8 @@ class IntentClassifier:
             title = ticket.get("title", "") or ""
 
             # Pre-classification filter
-            pre_intent, pre_label = self._pre_classify(title, body)
+            ticket_number = ticket.get("ticket_number", "") or ""
+            pre_intent, pre_label = self._pre_classify(title, body, ticket_number)
             if pre_intent:
                 ticket["intent"] = pre_intent
                 ticket["intent_label"] = pre_label
@@ -607,30 +604,23 @@ class IntentClassifier:
             return {"intent": "INDETERMINADO", "intent_label": "Indeterminado", "confidence": 0.5}
 
     def get_summary(self, tickets):
-        total_all = len(tickets)
-        if total_all == 0:
+        total = len(tickets)
+        if total == 0:
             return {
-                "total": 0, "total_all": 0,
+                "total": 0,
                 "consulta": 0, "reclamo": 0, "indeterminado": 0,
-                "no_aplica": 0,
                 "consulta_pct": 0, "reclamo_pct": 0, "indeterminado_pct": 0,
-                "no_aplica_pct": 0,
             }
         counts = Counter(t.get("intent", "INDETERMINADO") for t in tickets)
-        no_aplica = counts.get("NO_APLICA", 0)
-        total_classified = total_all - no_aplica
-        base = total_classified or 1
+        base = total or 1
         return {
-            "total": total_classified,
-            "total_all": total_all,
+            "total": total,
             "consulta": counts.get("CONSULTA", 0),
             "reclamo": counts.get("RECLAMO", 0),
             "indeterminado": counts.get("INDETERMINADO", 0),
-            "no_aplica": no_aplica,
             "consulta_pct": round(counts.get("CONSULTA", 0) / base * 100, 1),
             "reclamo_pct": round(counts.get("RECLAMO", 0) / base * 100, 1),
             "indeterminado_pct": round(counts.get("INDETERMINADO", 0) / base * 100, 1),
-            "no_aplica_pct": round(no_aplica / total_all * 100, 1),
         }
 
     # ══════════════════════════════════════════════════════════════
