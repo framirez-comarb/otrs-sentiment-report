@@ -150,47 +150,62 @@ class ReportGenerator:
         if not by_day and not by_month:
             return ""
 
-        max_day = max((d["count"] for d in by_day), default=1)
-        day_bars = ""
-        for d in reversed(by_day):
-            pct = d["count"] / max_day * 100
-            short_date = d["date"][5:]
-            day_bars += (
-                '<div class="timeline-bar-wrap">'
-                '<span class="timeline-label">%s</span>'
-                '<div class="timeline-bar">'
-                '<div class="timeline-bar-fill" style="width:%.0f%%"></div>'
-                '</div>'
-                '<span class="timeline-count">%d</span>'
-                '</div>' % (short_date, pct, d["count"])
-            )
+        def stacked_bars(entries, label_fn, max_val):
+            bars = ""
+            for entry in reversed(entries):
+                total = entry.get("total", 0)
+                pct_total = total / max_val * 100
+                c = entry.get("consulta", 0)
+                r = entry.get("reclamo", 0)
+                ind = entry.get("indeterminado", 0)
+                # Widths proportional to each category within the total bar width
+                pct_c = (c / total * pct_total) if total else 0
+                pct_r = (r / total * pct_total) if total else 0
+                pct_i = (ind / total * pct_total) if total else 0
+                bars += (
+                    '<div class="timeline-bar-wrap">'
+                    '<span class="timeline-label">%s</span>'
+                    '<div class="timeline-bar">'
+                    '<div class="timeline-bar-fill stacked-consulta" style="width:%.1f%%"></div>'
+                    '<div class="timeline-bar-fill stacked-reclamo" style="width:%.1f%%"></div>'
+                    '<div class="timeline-bar-fill stacked-indeterminado" style="width:%.1f%%"></div>'
+                    '</div>'
+                    '<span class="timeline-count">%d</span>'
+                    '</div>' % (label_fn(entry), pct_c, pct_r, pct_i, total)
+                )
+            return bars
 
-        max_month = max((m["count"] for m in by_month), default=1)
+        max_day = max((d.get("total", 0) for d in by_day), default=1)
+        day_bars = stacked_bars(by_day, lambda d: d["date"][5:], max_day)
+
         month_names = {"01":"Ene","02":"Feb","03":"Mar","04":"Abr","05":"May",
                        "06":"Jun","07":"Jul","08":"Ago","09":"Sep","10":"Oct",
                        "11":"Nov","12":"Dic"}
-        month_bars = ""
-        for m in reversed(by_month):
-            pct = m["count"] / max_month * 100
-            parts = m["month"].split("-")
-            label = "%s %s" % (month_names.get(parts[1], parts[1]), parts[0])
-            month_bars += (
-                '<div class="timeline-bar-wrap">'
-                '<span class="timeline-label">%s</span>'
-                '<div class="timeline-bar">'
-                '<div class="timeline-bar-fill month-fill" style="width:%.0f%%"></div>'
-                '</div>'
-                '<span class="timeline-count">%d</span>'
-                '</div>' % (label, pct, m["count"])
-            )
+        max_month = max((m.get("total", 0) for m in by_month), default=1)
+        month_bars = stacked_bars(
+            by_month,
+            lambda m: "%s %s" % (month_names.get(m["month"].split("-")[1], m["month"].split("-")[1]),
+                                 m["month"].split("-")[0]),
+            max_month,
+        )
 
         return (
             '<div class="timeline-charts">'
             '<div class="timeline-chart">'
             '<h3 class="timeline-title">Tickets por D\u00eda</h3>'
+            '<div class="stacked-legend">'
+            '<span class="stacked-legend-item"><span class="stacked-dot" style="background:var(--accent-teal)"></span>Consulta</span>'
+            '<span class="stacked-legend-item"><span class="stacked-dot" style="background:var(--accent-orange)"></span>Reclamo</span>'
+            '<span class="stacked-legend-item"><span class="stacked-dot" style="background:var(--accent-gray)"></span>Indeterminado</span>'
+            '</div>'
             '<div class="timeline-bars">%s</div></div>'
             '<div class="timeline-chart">'
             '<h3 class="timeline-title">Tickets por Mes</h3>'
+            '<div class="stacked-legend">'
+            '<span class="stacked-legend-item"><span class="stacked-dot" style="background:var(--accent-teal)"></span>Consulta</span>'
+            '<span class="stacked-legend-item"><span class="stacked-dot" style="background:var(--accent-orange)"></span>Reclamo</span>'
+            '<span class="stacked-legend-item"><span class="stacked-dot" style="background:var(--accent-gray)"></span>Indeterminado</span>'
+            '</div>'
             '<div class="timeline-bars">%s</div></div>'
             '</div>' % (day_bars, month_bars)
         )
@@ -778,18 +793,28 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
     background: var(--bg-primary);
     border-radius: 4px;
     overflow: hidden;
+    display: flex;
   }}
 
   .timeline-bar-fill {{
     height: 100%;
-    background: var(--accent-blue);
-    border-radius: 4px;
     transition: width 0.6s ease;
-    min-width: 2px;
+    min-width: 0;
   }}
+  .timeline-bar-fill.stacked-consulta {{ background: var(--accent-teal); }}
+  .timeline-bar-fill.stacked-reclamo {{ background: var(--accent-orange); }}
+  .timeline-bar-fill.stacked-indeterminado {{ background: var(--accent-gray); }}
+  .timeline-bar-fill:first-child {{ border-radius: 4px 0 0 4px; }}
+  .timeline-bar-fill:last-child {{ border-radius: 0 4px 4px 0; }}
+  .timeline-bar-fill:only-child {{ border-radius: 4px; }}
 
-  .timeline-bar-fill.month-fill {{
-    background: linear-gradient(90deg, var(--accent-teal), var(--accent-orange));
+  .stacked-legend {{
+    display: flex; gap: 16px; margin-bottom: 8px; font-size: 0.75rem;
+    color: var(--text-secondary);
+  }}
+  .stacked-legend-item {{ display: flex; align-items: center; gap: 4px; }}
+  .stacked-dot {{
+    width: 10px; height: 10px; border-radius: 50%; display: inline-block;
   }}
 
   .timeline-count {{

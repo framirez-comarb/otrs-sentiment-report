@@ -476,7 +476,7 @@ class IntentClassifier:
         # SUMA BOT tickets with trivial/noise message (ok, oka, bueno, __file__, Index: 0)
         if re.match(r"suma bot\s+-\s+\w+\s+-\s+\d{11}\s+-\s+(ok|oka|bueno)\s*$", title_l):
             return True
-        if re.match(r"suma bot\s+-\s+\w+\s+-\s+\d{11}\s+-\s+__file__\s*$", title_l):
+        if re.match(r"suma bot\s+-\s+\w+\s+-\s+\d{11}\s+-\s+__(file|image)__\s*$", title_l):
             return True
         if re.match(r"suma bot\s+-\s+\w+\s+-\s+\d{11}\s+-\s+index:\s*\d+,\s*size:\s*\d+\s*$", title_l):
             return True
@@ -486,6 +486,8 @@ class IntentClassifier:
         if body_l in _DISCARD_BODY_EXACT:
             return True
         if title_l in _DISCARD_TITLE_EXACT:
+            return True
+        if title_l.startswith("undeliverable"):
             return True
         if any(s in title_l for s in _DISCARD_TITLE_SUBSTRINGS):
             return True
@@ -509,9 +511,11 @@ class IntentClassifier:
         if re.search(r"\b(error|problema|problemas|mal funcionamiento|inconveniente|inconvenientes)\b", title_norm):
             return "RECLAMO", "Reclamo/Error"
 
-        # Body-based: "error" or "errores" in body → Reclamo
+        # Body-based patterns → Reclamo
         body_norm = _normalize_text(body.lower().strip())
         if re.search(r"\b(error|errores)\b", body_norm):
+            return "RECLAMO", "Reclamo/Error"
+        if "no calcula" in body_norm or "sistema no deja" in body_norm:
             return "RECLAMO", "Reclamo/Error"
 
         return None, None
@@ -859,19 +863,32 @@ class IntentClassifier:
     # ══════════════════════════════════════════════════════════════
 
     def get_timeline_data(self, tickets):
-        """Aggregate ticket counts by day and month."""
-        day_counter = Counter()
-        month_counter = Counter()
+        """Aggregate ticket counts by day and month, broken down by intent."""
+        day_data = {}   # date -> {CONSULTA: n, RECLAMO: n, INDETERMINADO: n}
+        month_data = {} # month -> {CONSULTA: n, RECLAMO: n, INDETERMINADO: n}
 
         for t in tickets:
             date_str = t.get("created", "") or t.get("first_article_date", "")
             parsed = self._parse_date(date_str)
-            if parsed:
-                day_counter[parsed.strftime("%Y-%m-%d")] += 1
-                month_counter[parsed.strftime("%Y-%m")] += 1
+            if not parsed:
+                continue
+            intent = t.get("intent", "INDETERMINADO")
+            day_key = parsed.strftime("%Y-%m-%d")
+            month_key = parsed.strftime("%Y-%m")
+            day_data.setdefault(day_key, Counter())[intent] += 1
+            month_data.setdefault(month_key, Counter())[intent] += 1
 
-        by_day = [{"date": k, "count": v} for k, v in sorted(day_counter.items())]
-        by_month = [{"month": k, "count": v} for k, v in sorted(month_counter.items())]
+        intents = ("CONSULTA", "RECLAMO", "INDETERMINADO")
+        by_day = [
+            {"date": k, "total": sum(v.values()),
+             **{i.lower(): v.get(i, 0) for i in intents}}
+            for k, v in sorted(day_data.items())
+        ]
+        by_month = [
+            {"month": k, "total": sum(v.values()),
+             **{i.lower(): v.get(i, 0) for i in intents}}
+            for k, v in sorted(month_data.items())
+        ]
 
         log.info("Timeline: %d days, %d months", len(by_day), len(by_month))
         return {"by_day": by_day, "by_month": by_month}
