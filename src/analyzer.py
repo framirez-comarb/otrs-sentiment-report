@@ -473,8 +473,15 @@ class IntentClassifier:
         # Staff response starting with "Estimado/a <nombre>"
         if re.match(r"estimad[oa]/?a?\s+\w", body_l):
             return True
-        # SUMA BOT tickets with trivial user message (ok, oka, bueno)
+        # SUMA BOT tickets with trivial/noise message (ok, oka, bueno, __file__, Index: 0)
         if re.match(r"suma bot\s+-\s+\w+\s+-\s+\d{11}\s+-\s+(ok|oka|bueno)\s*$", title_l):
+            return True
+        if re.match(r"suma bot\s+-\s+\w+\s+-\s+\d{11}\s+-\s+__file__\s*$", title_l):
+            return True
+        if re.match(r"suma bot\s+-\s+\w+\s+-\s+\d{11}\s+-\s+index:\s*\d+,\s*size:\s*\d+\s*$", title_l):
+            return True
+        # Title equals body (no useful content beyond the subject line)
+        if title_l and title_l == body_l:
             return True
         if body_l in _DISCARD_BODY_EXACT:
             return True
@@ -500,6 +507,11 @@ class IntentClassifier:
         if re.search(r"\bconsulta\b", title_norm):
             return "CONSULTA", "Consulta/Duda"
         if re.search(r"\b(error|problema|problemas|mal funcionamiento|inconveniente|inconvenientes)\b", title_norm):
+            return "RECLAMO", "Reclamo/Error"
+
+        # Body-based: "error" or "errores" in body → Reclamo
+        body_norm = _normalize_text(body.lower().strip())
+        if re.search(r"\b(error|errores)\b", body_norm):
             return "RECLAMO", "Reclamo/Error"
 
         return None, None
