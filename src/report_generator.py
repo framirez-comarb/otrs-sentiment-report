@@ -497,7 +497,7 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
   }}
 
   .bar-label {{
-    width: 110px;
+    width: 170px;
     font-size: 0.85rem;
     color: var(--text-secondary);
     text-align: right;

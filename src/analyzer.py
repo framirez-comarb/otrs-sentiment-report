@@ -538,11 +538,15 @@ class IntentClassifier:
         if not has_error and re.search(r"\bnecesito\b", combined_norm):
             return "CONSULTA", "Consulta/Duda/Solicitud"
 
-        # "no me ..." / "no muestra" → Reclamo
+        # "no me ..." / "no muestra" / "no funciona" / "no se ..." → Reclamo
         _reclamo_phrases = (
             "no me funciona", "no me actualiza", "no me deja", "no me sale",
             "no me trae", "no me toma", "no me lo permite", "no me habilita",
             "no me permitio", "no me permite", "no muestra",
+            "no funciona", "no esta funcionando", "no funcionaba",
+            "no se puede", "no se despliega", "no se encuentra",
+            "no esta pasando", "no corresponde", "no fueron hechas",
+            "no actualiza", "no nos deja", "sistema no lo percibe",
         )
         if any(p in combined_norm for p in _reclamo_phrases):
             return "RECLAMO", "Reclamo/Error"
