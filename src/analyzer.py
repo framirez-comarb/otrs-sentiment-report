@@ -473,6 +473,9 @@ class IntentClassifier:
         # Staff response starting with "Estimado/a <nombre>"
         if re.match(r"estimad[oa]/?a?\s+\w", body_l):
             return True
+        # SUMA BOT tickets with trivial user message (ok, oka, bueno)
+        if re.match(r"suma bot\s+-\s+\w+\s+-\s+\d{11}\s+-\s+(ok|oka|bueno)\s*$", title_l):
+            return True
         if body_l in _DISCARD_BODY_EXACT:
             return True
         if title_l in _DISCARD_TITLE_EXACT:
