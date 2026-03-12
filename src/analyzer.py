@@ -1,7 +1,7 @@
 """
 Intent Classifier
 =================
-Classifies ticket text by intent (Consulta/Duda vs Reclamo/Error)
+Classifies ticket text by intent (Consulta/Duda/Solicitud vs Reclamo/Error)
 using keyword/pattern matching, generates word clouds with bigrams/trigrams,
 and computes timeline data.
 """
@@ -216,6 +216,9 @@ EXCLUDED_NGRAMS = {
     "estimado contribuyente", "estimada contribuyente",
     # ── Domain noise ──
     "archivo adjunto", "adjunto archivo",
+    # ── Word cloud exclusions (specific n-grams) ──
+    "captura pantalla",
+    "declaración jurada del", "declaracion jurada del",
     # ── SUM signature fragments (Atte. SUM - Sistema Unificado de Mesa de Ayuda - Comisión Arbitral) ──
     "sistema unificado", "unificado mesa", "mesa ayuda", "ayuda comision",
     "comision arbitral del",
@@ -428,6 +431,10 @@ _DISCARD_BODY_EXACT = {"", "file", "image"}
 _DISCARD_TITLE_EXACT = {"merged ticket"}
 
 # ── Force-classification by ticket number ──
+_DISCARD_TICKETS = {
+    "2026011510000895",
+}
+
 _FORCE_RECLAMO = {
     "2026021210003485", "2026020410002787",
     "2026011910001752",
@@ -463,8 +470,10 @@ def is_staff_response(text):
 class IntentClassifier:
 
     @staticmethod
-    def _should_discard(title: str, body: str, sender: str = "") -> bool:
+    def _should_discard(title: str, body: str, sender: str = "", ticket_number: str = "") -> bool:
         """Return True if ticket should be excluded entirely from the report."""
+        if ticket_number in _DISCARD_TICKETS:
+            return True
         title_l = title.lower().strip()
         body_l = body.lower().strip()
         # Staff responses: sender starts with "Sistema " (e.g. "Sistema SIFERE WEB")
@@ -502,17 +511,23 @@ class IntentClassifier:
         if ticket_number in _FORCE_RECLAMO:
             return "RECLAMO", "Reclamo/Error"
         if ticket_number in _FORCE_CONSULTA:
-            return "CONSULTA", "Consulta/Duda"
+            return "CONSULTA", "Consulta/Duda/Solicitud"
 
         # Title-based direct classification
         title_norm = _normalize_text(title.lower().strip())
         if re.search(r"\bconsulta\b", title_norm):
-            return "CONSULTA", "Consulta/Duda"
+            return "CONSULTA", "Consulta/Duda/Solicitud"
         if re.search(r"\b(error|problema|problemas|mal funcionamiento|inconveniente|inconvenientes)\b", title_norm):
             return "RECLAMO", "Reclamo/Error"
 
-        # Body-based patterns → Reclamo
+        # Title/body-based → Consulta (solicitud keywords)
         body_norm = _normalize_text(body.lower().strip())
+        if re.search(r"\b(solicitud|solicito|solicita|solicitar)\b", title_norm):
+            return "CONSULTA", "Consulta/Duda/Solicitud"
+        if re.search(r"\b(solicitud|solicito|solicita|solicitar)\b", body_norm):
+            return "CONSULTA", "Consulta/Duda/Solicitud"
+
+        # Body-based patterns → Reclamo
         if re.search(r"\b(error|errores)\b", body_norm):
             return "RECLAMO", "Reclamo/Error"
         if "no calcula" in body_norm or "sistema no deja" in body_norm:
@@ -527,6 +542,7 @@ class IntentClassifier:
                 t.get("title", "") or "",
                 t.get("user_message_body", "") or t.get("first_article_body", "") or "",
                 t.get("first_article_from", "") or "",
+                t.get("ticket_number", "") or "",
             )
         ]
         total = len(tickets)
@@ -614,7 +630,7 @@ class IntentClassifier:
 
         if consulta_score > reclamo_score:
             confidence = consulta_score / (consulta_score + reclamo_score)
-            return {"intent": "CONSULTA", "intent_label": "Consulta/Duda", "confidence": round(confidence, 2)}
+            return {"intent": "CONSULTA", "intent_label": "Consulta/Duda/Solicitud", "confidence": round(confidence, 2)}
         elif reclamo_score > consulta_score:
             confidence = reclamo_score / (consulta_score + reclamo_score)
             return {"intent": "RECLAMO", "intent_label": "Reclamo/Error", "confidence": round(confidence, 2)}

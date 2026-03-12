@@ -956,7 +956,7 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
     </div>
     <div class="stat-card consulta">
       <div class="stat-value">{consulta}</div>
-      <div class="stat-label">Consulta / Duda</div>
+      <div class="stat-label">Consulta / Duda / Solicitud</div>
       <div class="stat-pct">{consulta_pct}%</div>
     </div>
     <div class="stat-card reclamo">
@@ -1000,7 +1000,7 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
 
       <div class="bar-chart">
         <div class="bar-row">
-          <span class="bar-label">Consulta/Duda</span>
+          <span class="bar-label">Consulta/Duda/Solicitud</span>
           <div class="bar-track">
             <div class="bar-fill" style="width: {consulta_pct}%; background: var(--accent-teal);">
               {consulta} ({consulta_pct}%)
@@ -1028,7 +1028,7 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
       <div class="chart-legend">
         <div class="legend-item">
           <div class="legend-dot" style="background: var(--accent-teal)"></div>
-          <span class="legend-label">Consulta/Duda</span>
+          <span class="legend-label">Consulta/Duda/Solicitud</span>
           <span class="legend-value">{consulta}</span>
         </div>
         <div class="legend-item">
