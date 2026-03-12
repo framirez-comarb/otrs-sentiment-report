@@ -522,10 +522,25 @@ class IntentClassifier:
 
         # Title/body-based → Consulta (solicitud keywords)
         body_norm = _normalize_text(body.lower().strip())
+        combined_norm = title_norm + " " + body_norm
+        has_error = bool(re.search(r"\berror\b", combined_norm))
+
         if re.search(r"\b(solicitud|solicito|solicita|solicitar)\b", title_norm):
             return "CONSULTA", "Consulta/Duda/Solicitud"
         if re.search(r"\b(solicitud|solicito|solicita|solicitar)\b", body_norm):
             return "CONSULTA", "Consulta/Duda/Solicitud"
+
+        # rectificar/rectificativa → Consulta (unless also contains "error")
+        if not has_error and re.search(r"\b(rectificar|rectificativa)\b", combined_norm):
+            return "CONSULTA", "Consulta/Duda/Solicitud"
+
+        # necesito → Consulta (unless also contains "error")
+        if not has_error and re.search(r"\bnecesito\b", combined_norm):
+            return "CONSULTA", "Consulta/Duda/Solicitud"
+
+        # "no me permite" → Reclamo
+        if "no me permite" in combined_norm:
+            return "RECLAMO", "Reclamo/Error"
 
         # Body-based patterns → Reclamo
         if re.search(r"\b(error|errores)\b", body_norm):
