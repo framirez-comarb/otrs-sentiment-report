@@ -456,10 +456,13 @@ def is_staff_response(text):
 class IntentClassifier:
 
     @staticmethod
-    def _should_discard(title: str, body: str) -> bool:
+    def _should_discard(title: str, body: str, sender: str = "") -> bool:
         """Return True if ticket should be excluded entirely from the report."""
         title_l = title.lower().strip()
         body_l = body.lower().strip()
+        # Staff responses: sender starts with "Sistema " (e.g. "Sistema SIFERE WEB")
+        if sender.strip().lower().startswith("sistema "):
+            return True
         if body_l in _DISCARD_BODY_EXACT:
             return True
         if any(s in title_l for s in _DISCARD_TITLE_SUBSTRINGS):
@@ -508,6 +511,7 @@ class IntentClassifier:
             if not self._should_discard(
                 t.get("title", "") or "",
                 t.get("user_message_body", "") or t.get("first_article_body", "") or "",
+                t.get("first_article_from", "") or "",
             )
         ]
         total = len(tickets)
