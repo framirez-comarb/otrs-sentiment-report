@@ -547,12 +547,19 @@ class IntentClassifier:
             "no se puede", "no se despliega", "no se encuentra",
             "no esta pasando", "no corresponde", "no fueron hechas",
             "no actualiza", "no nos deja", "sistema no lo percibe",
+            "no la toma", "no habilita", "no figura", "no lo hace",
+            "no pudiendo", "no trae las alicuotas",
+            "sistema no la opcion", "no cumple las validaciones",
+            "no deja tomar", "no el cm03", "no se translada",
+            "no realizamos actividades", "no aparece el codigo",
+            "no registra el alta", "no registra",
+            "no aparecen en el listado", "no aparecen", "yo no realizo",
         )
         if any(p in combined_norm for p in _reclamo_phrases):
             return "RECLAMO", "Reclamo/Error"
 
-        # "cual es" / "cuál es" → Consulta
-        if "cual es" in combined_norm:
+        # "cual es" / "cuál es" / "quería saber" → Consulta
+        if "cual es" in combined_norm or "queria saber" in combined_norm:
             return "CONSULTA", "Consulta/Duda/Solicitud"
 
         # Body-based patterns → Reclamo
