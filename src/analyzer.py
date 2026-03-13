@@ -433,6 +433,7 @@ _DISCARD_TITLE_EXACT = {"merged ticket"}
 # ── Force-classification by ticket number ──
 _DISCARD_TICKETS = {
     "2026011510000895",
+    "2026011910001431", "2026031210001494",
 }
 
 _FORCE_RECLAMO = {
@@ -554,12 +555,24 @@ class IntentClassifier:
             "no realizamos actividades", "no aparece el codigo",
             "no registra el alta", "no registra",
             "no aparecen en el listado", "no aparecen", "yo no realizo",
+            "me metieron en convenio", "arba reclama",
+            "me siguen poniendo saldo", "web anda mas lento",
+            "el sistema no da", "queda en blanco", "tratando de cargar",
+            "solo me trae", "mal ingresada en el sistema",
+            "no se translada a la solapa", "aparece impago",
+            "no aparece en el menu", "sin la posibilidad",
+            "inconsistencia de fecha", "o me permitio",
         )
         if any(p in combined_norm for p in _reclamo_phrases):
             return "RECLAMO", "Reclamo/Error"
 
-        # "cual es" / "cuál es" / "quería saber" → Consulta
-        if "cual es" in combined_norm or "queria saber" in combined_norm:
+        # "cual es" / "cuál es" / "quería saber" + consulta phrases → Consulta
+        _consulta_phrases = (
+            "cual es", "queria saber",
+            "no se si tengo que", "que se hace",
+            "quiero pagar capital", "quiero saber en que caso",
+        )
+        if any(p in combined_norm for p in _consulta_phrases):
             return "CONSULTA", "Consulta/Duda/Solicitud"
 
         # Body-based patterns → Reclamo
