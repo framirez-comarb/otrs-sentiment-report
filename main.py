@@ -15,6 +15,7 @@ from datetime import datetime, date
 
 from src.scraper import OTRSScraper
 from src.analyzer import IntentClassifier
+from src.topic_classifier import TopicClassifier
 from src.report_generator import ReportGenerator
 
 logging.basicConfig(
@@ -88,6 +89,14 @@ def main():
     intent_summary = classifier.get_summary(analyzed_tickets)
     log.info(f"Intent summary: {intent_summary}")
 
+    # ── Step 2b: Topic Classification ──
+    log.info("Step 2b: Classifying tickets by topic...")
+    topic_classifier = TopicClassifier()
+    analyzed_tickets = topic_classifier.classify_tickets(analyzed_tickets)
+    topic_summary = topic_classifier.get_topic_summary(analyzed_tickets)
+    log.info(f"Topic summary: {len(topic_summary['topics'])} topics, "
+             f"{topic_summary['total_classified']} classified")
+
     # ── Step 3: Word Cloud ──
     log.info("Step 3: Generating word cloud...")
     wordcloud_result = classifier.generate_wordcloud(analyzed_tickets)
@@ -117,6 +126,7 @@ def main():
         timeline_data=timeline_data,
         top_bigrams=top_bigrams,
         top_trigrams=top_trigrams,
+        topic_summary=topic_summary,
     )
 
     # Write report to docs/ for GitHub Pages

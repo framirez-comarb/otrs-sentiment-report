@@ -419,6 +419,17 @@ _DISCARD_TITLE_SUBSTRINGS = (
     "hacker profesional",
     "auditoria: empresa seleccionada", "auditoria empresa seleccionada",
     "fiscalizacion programada",
+    # Phishing / webmail scams
+    "datos inconsistentes para la validacion",
+    "soporte y servicios de webmail",
+    "manutencion y soporte",
+    "pendiente de regularizacion",
+    "do you want to print",
+    "interes en el puesto laboral",
+    "delivery status notification",
+    "nueva factura disponible",
+    # ARCA / notifications
+    "multa de",
     # Internal
     "comarb - notas entrantes",
 )
@@ -426,6 +437,9 @@ _DISCARD_BODY_SUBSTRINGS = (
     "merged ticket",
     # Bounces / mailer-daemon
     "undelivered mail", "mail system", "could not be delivered",
+    # Phishing / webmail scams
+    "su cuenta sera suspendida", "su cuenta será suspendida",
+    "tu factura ya esta disponible",
 )
 _DISCARD_BODY_EXACT = {"", "file", "image"}
 _DISCARD_TITLE_EXACT = {"merged ticket"}

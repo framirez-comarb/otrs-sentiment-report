@@ -35,11 +35,16 @@ class ReportGenerator:
         timeline_data: dict = None,
         top_bigrams: list = None,
         top_trigrams: list = None,
+        topic_summary: dict = None,
     ) -> str:
         """Generate the full HTML report."""
         ticket_rows = self._build_ticket_rows(tickets)
         timeline_charts = self._build_timeline_charts(timeline_data or {})
         ngram_lists = self._build_ngram_lists(top_bigrams or [], top_trigrams or [])
+        topic_section = self._build_topic_section(topic_summary or {})
+
+        # Build topic filter buttons for ticket table
+        topic_filters = self._build_topic_filter_buttons(topic_summary or {})
 
         html = REPORT_TEMPLATE.format(
             generated_at=generated_at.strftime("%d/%m/%Y %H:%M"),
@@ -61,6 +66,8 @@ class ReportGenerator:
             chart_indeterminado=intent_summary.get("indeterminado", 0),
             timeline_charts=timeline_charts,
             ngram_lists=ngram_lists,
+            topic_section=topic_section,
+            topic_filters=topic_filters,
         )
 
         return html
@@ -119,12 +126,25 @@ class ReportGenerator:
             if t.get("staff_filtered"):
                 staff_badge = ' <span class="badge staff-badge">Staff filtrado</span>'
 
+            # Topic badge
+            topic_badge = ""
+            primary_topic = t.get("primary_topic", "")
+            topic_color = t.get("primary_topic_color", "#b2bec3")
+            topic_id = t.get("primary_topic_id", "")
+            if primary_topic and primary_topic != "N/A":
+                topic_name_escaped = (
+                    primary_topic.replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;")
+                )
+                topic_badge = f' <span class="badge topic-badge" style="--badge-color: {topic_color}">{topic_name_escaped}</span>'
+
             row = f"""
-            <div class="ticket-card" data-intent="{intent}">
+            <div class="ticket-card" data-intent="{intent}" data-topic="{topic_id}">
                 <div class="ticket-header" onclick="toggleBody('body-{idx}', this)">
                     <div class="ticket-meta-row">
                         <span class="ticket-number">{ticket_number}</span>
-                        <span class="badge" style="--badge-color: {color}">{icon} {label}</span>{staff_badge}
+                        <span class="badge" style="--badge-color: {color}">{icon} {label}</span>{topic_badge}{staff_badge}
                         <div class="score-bar">
                             <div class="score-fill" style="width: {confidence*100:.0f}%; background: {color}"></div>
                         </div>
@@ -208,6 +228,143 @@ class ReportGenerator:
             '</div>'
             '<div class="timeline-bars">%s</div></div>'
             '</div>' % (day_bars, month_bars)
+        )
+
+    def _build_topic_filter_buttons(self, topic_summary):
+        """Build topic filter buttons for the ticket table."""
+        topics = topic_summary.get("topics", [])
+        if not topics:
+            return ""
+        buttons = []
+        for t in topics:
+            tid = t["id"]
+            name = t["name"]
+            if name.startswith("Otros:"):
+                tid = "otros"
+                name_short = "Otros"
+            else:
+                name_short = name.split("/")[0].strip()
+            # Avoid duplicate "otros" buttons
+            btn_html = (
+                '<button class="filter-btn topic-filter-btn" '
+                f'onclick="filterByTopic(\'{tid}\')">{name_short}</button>'
+            )
+            buttons.append(btn_html)
+
+        # Deduplicate
+        seen = set()
+        unique = []
+        for b in buttons:
+            if b not in seen:
+                seen.add(b)
+                unique.append(b)
+
+        return (
+            '<span class="filter-separator">|</span>'
+            '<button class="filter-btn topic-filter-btn active" '
+            'onclick="filterByTopic(\'ALL\')">Todos los temas</button>'
+            + "".join(unique)
+        )
+
+    def _build_topic_section(self, topic_summary):
+        """Build the thematic classification section HTML."""
+        topics = topic_summary.get("topics", [])
+        total_classified = topic_summary.get("total_classified", 0)
+
+        if not topics:
+            return ""
+
+        # Sort by total descending for the bar chart
+        sorted_topics = sorted(topics, key=lambda x: -x["total"])
+        max_total = sorted_topics[0]["total"] if sorted_topics else 1
+
+        # ── Horizontal stacked bar chart ──
+        bars_html = ""
+        for t in sorted_topics:
+            pct_total = t["total"] / max_total * 100
+            pct_c = (t["consulta"] / t["total"] * pct_total) if t["total"] else 0
+            pct_r = (t["reclamo"] / t["total"] * pct_total) if t["total"] else 0
+            pct_i = (t["indeterminado"] / t["total"] * pct_total) if t["total"] else 0
+            name = t["name"]
+            if len(name) > 45:
+                name = name[:42] + "..."
+            bars_html += (
+                '<div class="topic-bar-wrap">'
+                '<span class="topic-bar-label">%s</span>'
+                '<div class="topic-bar">'
+                '<div class="topic-bar-fill" style="width:%.1f%%;background:var(--accent-teal)"></div>'
+                '<div class="topic-bar-fill" style="width:%.1f%%;background:var(--accent-orange)"></div>'
+                '<div class="topic-bar-fill" style="width:%.1f%%;background:var(--accent-gray)"></div>'
+                '</div>'
+                '<span class="topic-bar-count">%d</span>'
+                '</div>' % (name, pct_c, pct_r, pct_i, t["total"])
+            )
+
+        # ── Summary table ──
+        table_rows = ""
+        for t in sorted_topics:
+            pct = t.get("pct", 0)
+            table_rows += (
+                '<tr>'
+                '<td><span class="topic-dot" style="background:%s"></span>%s</td>'
+                '<td class="num">%d</td>'
+                '<td class="num">%d</td>'
+                '<td class="num">%d</td>'
+                '<td class="num">%d</td>'
+                '<td class="num">%.1f%%</td>'
+                '</tr>' % (t["color"], t["name"], t["total"], t["consulta"], t["reclamo"], t["indeterminado"], pct)
+            )
+
+        # ── Donut chart for topics ──
+        donut_arcs = ""
+        circumference = 2 * 3.14159265 * 90
+        offset = 0
+        for t in sorted_topics:
+            if t["total"] == 0:
+                continue
+            arc_len = (t["total"] / total_classified) * circumference if total_classified else 0
+            donut_arcs += (
+                '<circle cx="110" cy="110" r="90" fill="none" '
+                'stroke="%s" stroke-width="24" '
+                'stroke-dasharray="%.1f %.1f" '
+                'stroke-dashoffset="%.1f"/>'
+                % (t["color"], arc_len, circumference, -offset)
+            )
+            offset += arc_len
+
+        return (
+            '<div class="section">'
+            '<h2 class="section-title">Clasificaci\u00f3n Tem\u00e1tica</h2>'
+            # Row 1: Donut + Table side by side
+            '<div class="topic-overview">'
+            '<div class="donut-chart">'
+            '<svg viewBox="0 0 220 220" width="220" height="220" style="transform:rotate(-90deg)">'
+            '<circle cx="110" cy="110" r="90" fill="none" stroke="var(--bg-primary)" stroke-width="24"/>'
+            '%s'
+            '</svg>'
+            '<div class="donut-center">'
+            '<div class="big-num">%d</div>'
+            '<div class="label">clasificados</div>'
+            '</div></div>'
+            '<div class="topic-table-container">'
+            '<table class="topic-table">'
+            '<thead><tr>'
+            '<th>Tema</th><th>Total</th><th>Consultas</th><th>Reclamos</th><th>Indeterminados</th><th>%% del total</th>'
+            '</tr></thead>'
+            '<tbody>%s</tbody>'
+            '</table></div>'
+            '</div>'  # close topic-overview
+            # Row 2: Bar chart full width
+            '<div class="topic-bars-box">'
+            '<div class="stacked-legend">'
+            '<span class="stacked-legend-item"><span class="stacked-dot" style="background:var(--accent-teal)"></span>Consulta</span>'
+            '<span class="stacked-legend-item"><span class="stacked-dot" style="background:var(--accent-orange)"></span>Reclamo</span>'
+            '<span class="stacked-legend-item"><span class="stacked-dot" style="background:var(--accent-gray)"></span>Indeterminado</span>'
+            '</div>'
+            '%s'
+            '</div>'
+            '</div>'  # close section
+            % (donut_arcs, total_classified, table_rows, bars_html)
         )
 
     def _build_ngram_lists(self, top_bigrams, top_trigrams):
@@ -419,8 +576,14 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
 
   .donut-chart {{
     position: relative;
-    width: 220px;
-    height: 220px;
+    width: 280px;
+    height: 280px;
+    flex-shrink: 0;
+  }}
+
+  .donut-chart svg {{
+    width: 280px;
+    height: 280px;
   }}
 
   .donut-chart svg {{
@@ -446,30 +609,6 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
     color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.05em;
-  }}
-
-  .chart-legend {{
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-  }}
-
-  .legend-item {{
-    display: flex;
-    align-items: center;
-    gap: 0.8rem;
-  }}
-
-  .legend-dot {{
-    width: 14px;
-    height: 14px;
-    border-radius: 4px;
-    flex-shrink: 0;
-  }}
-
-  .legend-label {{
-    font-size: 0.95rem;
-    color: var(--text-secondary);
   }}
 
   .legend-value {{
@@ -898,6 +1037,149 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
     flex-shrink: 0;
   }}
 
+  /* ── Topic Section ── */
+  .topic-overview {{
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 2rem;
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    align-items: center;
+    gap: 2rem;
+    margin-bottom: 1.5rem;
+  }}
+
+  .topic-overview .topic-table-container {{
+    margin-bottom: 0;
+    border: none;
+    border-radius: 0;
+    overflow: auto;
+  }}
+
+  @media (max-width: 900px) {{
+    .topic-overview {{
+      grid-template-columns: 1fr;
+      justify-items: center;
+    }}
+  }}
+
+  .topic-bars-box {{
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 2rem;
+  }}
+
+  .topic-bar-wrap {{
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-bottom: 0.45rem;
+  }}
+
+  .topic-bar-label {{
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    width: 280px;
+    text-align: right;
+    flex-shrink: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }}
+
+  .topic-bar {{
+    flex: 1;
+    min-width: 120px;
+    height: 24px;
+    background: var(--bg-primary);
+    border-radius: 4px;
+    overflow: hidden;
+    display: flex;
+  }}
+
+  .topic-bar-fill {{
+    height: 100%;
+    min-width: 0;
+    transition: width 0.6s ease;
+  }}
+
+  .topic-bar-fill:first-child {{ border-radius: 4px 0 0 4px; }}
+  .topic-bar-fill:last-child {{ border-radius: 0 4px 4px 0; }}
+  .topic-bar-fill:only-child {{ border-radius: 4px; }}
+
+  .topic-bar-count {{
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    width: 32px;
+    flex-shrink: 0;
+  }}
+
+  .topic-table-container {{
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    margin-bottom: 1.5rem;
+  }}
+
+  .topic-table {{
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+  }}
+
+  .topic-table th {{
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    padding: 0.7rem 1rem;
+    text-align: left;
+    font-weight: 500;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-bottom: 1px solid var(--border);
+  }}
+
+  .topic-table td {{
+    padding: 0.6rem 1rem;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-primary);
+  }}
+
+  .topic-table td.num {{
+    font-family: 'JetBrains Mono', monospace;
+    text-align: center;
+    color: var(--text-secondary);
+  }}
+
+  .topic-table tr:hover {{
+    background: var(--bg-card-hover);
+  }}
+
+  .topic-dot {{
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    margin-right: 10px;
+    vertical-align: middle;
+  }}
+
+  .topic-badge {{
+    font-size: 0.7rem;
+    padding: 0.15rem 0.5rem;
+  }}
+
+  .filter-separator {{
+    color: var(--text-muted);
+    margin: 0 0.3rem;
+    display: inline-flex;
+    align-items: center;
+  }}
+
   /* ── Footer ── */
   .footer {{
     text-align: center;
@@ -1046,6 +1328,9 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- Topic Classification -->
+  {topic_section}
+
   <!-- Timeline -->
   <div class="section">
     <h2 class="section-title">Volumen de Tickets</h2>
@@ -1070,6 +1355,7 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
         <button class="filter-btn" onclick="filterTickets('CONSULTA')">&#x2753; Consultas</button>
         <button class="filter-btn" onclick="filterTickets('RECLAMO')">&#x26A0; Reclamos</button>
         <button class="filter-btn" onclick="filterTickets('INDETERMINADO')">&#x2796; Indeterminados</button>
+        {topic_filters}
         <button class="filter-btn" onclick="expandAll(true)" style="margin-left: auto;">Expandir todos</button>
         <button class="filter-btn" onclick="expandAll(false)">Colapsar todos</button>
       </div>
@@ -1115,24 +1401,37 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
   }}
 }})();
 
-// ── Filter tickets ──
-function filterTickets(intent) {{
-  const cards = document.querySelectorAll('.ticket-card');
-  const btns = document.querySelectorAll('.filter-btn');
+// ── Filter state ──
+let currentIntentFilter = 'ALL';
+let currentTopicFilter = 'ALL';
 
-  btns.forEach(b => {{
+function applyFilters() {{
+  const cards = document.querySelectorAll('.ticket-card');
+  cards.forEach(card => {{
+    const intentMatch = currentIntentFilter === 'ALL' || card.dataset.intent === currentIntentFilter;
+    const topicMatch = currentTopicFilter === 'ALL' || card.dataset.topic === currentTopicFilter;
+    card.style.display = (intentMatch && topicMatch) ? '' : 'none';
+  }});
+}}
+
+// ── Filter by intent ──
+function filterTickets(intent) {{
+  currentIntentFilter = intent;
+  // Update intent button states
+  document.querySelectorAll('.filter-btn:not(.topic-filter-btn)').forEach(b => {{
     if (b.textContent.includes('Expandir') || b.textContent.includes('Colapsar')) return;
     b.classList.remove('active');
   }});
   event.target.classList.add('active');
+  applyFilters();
+}}
 
-  cards.forEach(card => {{
-    if (intent === 'ALL' || card.dataset.intent === intent) {{
-      card.style.display = '';
-    }} else {{
-      card.style.display = 'none';
-    }}
-  }});
+// ── Filter by topic ──
+function filterByTopic(topicId) {{
+  currentTopicFilter = topicId;
+  document.querySelectorAll('.topic-filter-btn').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+  applyFilters();
 }}
 
 function toggleBody(bodyId, headerEl) {{
