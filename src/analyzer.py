@@ -350,6 +350,7 @@ CONSULTA_PATTERNS = [
     "solicito", "solicitamos", "solicitar",
     "prórroga", "prorroga",
     "tutorial",
+    "a partir de que fecha debo darme",
 ]
 
 RECLAMO_PATTERNS = [
@@ -374,6 +375,9 @@ RECLAMO_PATTERNS = [
     "no se acredita", "no se encuentra imputado",
     "no se ve", "no se ven",
     "excesivas demoras",
+    "no me está permitiendo", "no me esta permitiendo",
+    "no edita", "no genera", "no se traslada",
+    "figura en cero", "pero lo cambiaba manualmente",
     # Single-word (weight 1)
     "error", "falla", "problema", "reclamo", "queja", "urgente",
     "imposible", "bug", "incorrecto", "mal",
