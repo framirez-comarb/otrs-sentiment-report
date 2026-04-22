@@ -448,11 +448,17 @@ _DISCARD_BODY_SUBSTRINGS = (
     "su cuenta sera suspendida", "su cuenta será suspendida",
     "tu factura ya esta disponible",
     # Payment-processor auto-notifications (Mercado Pago transfer confirms etc.)
-    # — all use the same template with "%recipient_email%" placeholder and
-    # "Su operacion fue procesada correctamente" phrasing.
+    # Two template variants:
+    #  - "Transaccion efectuada" / "Su operacion fue procesada correctamente"
+    #    (transfer confirmations, %recipient_email% placeholder)
+    #  - "Pago acreditado" / "La operacion fue acreditada correctamente"
+    #    (payment receipt variant, typically from "Mercado Pago" sender)
     "%recipient_email%",
     "su operacion fue procesada correctamente",
     "transaccion efectuada",
+    "pago acreditado",
+    "la operacion fue acreditada correctamente",
+    "confirmacion automatica de pagos",
 )
 _DISCARD_BODY_EXACT = {"", "file", "image"}
 _DISCARD_TITLE_EXACT = {"merged ticket"}
