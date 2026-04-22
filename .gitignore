@@ -2,7 +2,11 @@ __pycache__/
 *.pyc
 .env
 venv/
-data/
 docs/
 *.egg-info/
 .pytest_cache/
+
+# Cache: tickets_analyzed.json is committed (persistent, reused across runs).
+# Everything else in data/ is ignored (raw dumps, debug artifacts).
+data/*
+!data/tickets_analyzed.json

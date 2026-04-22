@@ -9,6 +9,7 @@ and computes timeline data.
 import re
 import base64
 import logging
+import statistics
 import unicodedata
 from io import BytesIO
 from collections import Counter
@@ -462,6 +463,18 @@ _FORCE_CONSULTA = {
     "2026021210001871",
 }
 
+# ── Incognito suggestion patterns (agents suggesting private browsing) ──
+# First iteration: amplio. After validation may narrow to "incognito" only.
+INCOGNITO_PATTERNS = [
+    "modo incognito",        # covers "modo incógnito" via normalization
+    "navegacion privada",    # covers "navegación privada"
+    "ventana privada",
+    "incognito",             # covers "incógnito"
+    "inprivate",
+    "in private",
+    "modo invitado",
+]
+
 
 def _normalize_text(text):
     """Lowercase and strip accents for matching."""
@@ -484,6 +497,33 @@ def is_staff_response(text):
             if matches >= STAFF_THRESHOLD:
                 return True
     return False
+
+
+def detect_incognito_suggestion(text):
+    """Check if an agent response text contains an incognito-mode suggestion.
+    Returns {"has_suggestion": bool, "excerpt": str}.
+    Excerpt is ~180 chars of context around the first match.
+    """
+    if not text or len(text.strip()) < 10:
+        return {"has_suggestion": False, "excerpt": ""}
+
+    normalized = _normalize_text(text)
+    for pattern in INCOGNITO_PATTERNS:
+        idx = normalized.find(pattern)
+        if idx < 0:
+            continue
+        # Build excerpt from ORIGINAL text (not normalized) using the same index
+        # Index on normalized text ≈ index on original (NFKD preserves byte order
+        # for ASCII, and diacritics are single codepoints), safe enough for excerpts.
+        start = max(0, idx - 80)
+        end = min(len(text), idx + len(pattern) + 100)
+        excerpt = text[start:end].strip()
+        excerpt = re.sub(r"\s+", " ", excerpt)
+        prefix = "…" if start > 0 else ""
+        suffix = "…" if end < len(text) else ""
+        return {"has_suggestion": True, "excerpt": f"{prefix}{excerpt}{suffix}"}
+
+    return {"has_suggestion": False, "excerpt": ""}
 
 
 class IntentClassifier:
@@ -945,9 +985,10 @@ class IntentClassifier:
     # ══════════════════════════════════════════════════════════════
 
     def get_timeline_data(self, tickets):
-        """Aggregate ticket counts by day and month, broken down by intent."""
-        day_data = {}   # date -> {CONSULTA: n, RECLAMO: n, INDETERMINADO: n}
-        month_data = {} # month -> {CONSULTA: n, RECLAMO: n, INDETERMINADO: n}
+        """Aggregate ticket counts by day and month, broken down by intent.
+        Sorted descending (newest first)."""
+        day_data = {}   # date -> Counter of intents
+        month_data = {} # month -> Counter of intents
 
         for t in tickets:
             date_str = t.get("created", "") or t.get("first_article_date", "")
@@ -964,12 +1005,12 @@ class IntentClassifier:
         by_day = [
             {"date": k, "total": sum(v.values()),
              **{i.lower(): v.get(i, 0) for i in intents}}
-            for k, v in sorted(day_data.items())
+            for k, v in sorted(day_data.items(), reverse=True)
         ]
         by_month = [
             {"month": k, "total": sum(v.values()),
              **{i.lower(): v.get(i, 0) for i in intents}}
-            for k, v in sorted(month_data.items())
+            for k, v in sorted(month_data.items(), reverse=True)
         ]
 
         log.info("Timeline: %d days, %d months", len(by_day), len(by_month))
@@ -999,3 +1040,155 @@ class IntentClassifier:
                 pass
 
         return None
+
+    @staticmethod
+    def _parse_datetime(date_str):
+        """Parse date+time (seconds precision) — used for resolution stats."""
+        if not date_str:
+            return None
+        date_str = date_str.strip()
+        # "01/03/2026 - 11:45:07" or "01/03/2026 11:45"
+        m = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})\s*[-\s]\s*(\d{1,2}):(\d{2})(?::(\d{2}))?", date_str)
+        if m:
+            try:
+                return datetime(
+                    int(m.group(3)), int(m.group(2)), int(m.group(1)),
+                    int(m.group(4)), int(m.group(5)), int(m.group(6) or 0),
+                )
+            except ValueError:
+                pass
+        # "2026-02-26 08:20:00"
+        m = re.search(r"(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?", date_str)
+        if m:
+            try:
+                return datetime(
+                    int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                    int(m.group(4)), int(m.group(5)), int(m.group(6) or 0),
+                )
+            except ValueError:
+                pass
+        # Fall back to date-only
+        return IntentClassifier._parse_date(date_str)
+
+    # ══════════════════════════════════════════════════════════════
+    #  Incognito-suggestion analysis (second report tab)
+    # ══════════════════════════════════════════════════════════════
+
+    def detect_incognito_in_tickets(self, tickets):
+        """Annotate each ticket with has_incognito_suggestion + incognito_excerpt."""
+        matched = 0
+        for ticket in tickets:
+            agent_text = ticket.get("agent_responses", "") or ""
+            result = detect_incognito_suggestion(agent_text)
+            ticket["has_incognito_suggestion"] = result["has_suggestion"]
+            ticket["incognito_excerpt"] = result["excerpt"]
+            if result["has_suggestion"]:
+                matched += 1
+        log.info("Incognito detection: %d/%d tickets matched", matched, len(tickets))
+        return tickets
+
+    def compute_incognito_kpis(self, incognito_tickets, total_count):
+        """Compute KPIs for the incognito tab."""
+        total = len(incognito_tickets)
+        if total == 0:
+            return {
+                "total": 0, "pct_of_total": 0.0, "avg_per_day": 0.0,
+                "top_queue": "—", "top_queue_count": 0,
+            }
+
+        pct = (total / total_count * 100) if total_count > 0 else 0.0
+
+        # Average per day: span of distinct days with at least one incognito ticket
+        days = set()
+        for t in incognito_tickets:
+            parsed = self._parse_date(t.get("created", "") or t.get("first_article_date", ""))
+            if parsed:
+                days.add(parsed.date())
+        # Use span from min to max date to get a realistic daily average
+        if days:
+            span_days = (max(days) - min(days)).days + 1
+            avg_per_day = total / max(span_days, 1)
+        else:
+            avg_per_day = 0.0
+
+        # Top queue (just the segment after last "::", or the whole string)
+        queue_counter = Counter()
+        for t in incognito_tickets:
+            q = t.get("queue", "") or "—"
+            short = q.split("::")[-1].strip() if q else "—"
+            queue_counter[short] += 1
+        top_queue, top_queue_count = queue_counter.most_common(1)[0] if queue_counter else ("—", 0)
+
+        return {
+            "total": total,
+            "pct_of_total": round(pct, 1),
+            "avg_per_day": round(avg_per_day, 2),
+            "top_queue": top_queue,
+            "top_queue_count": top_queue_count,
+        }
+
+    def get_incognito_timeline(self, incognito_tickets):
+        """Daily + monthly counts for tickets with incognito suggestion. Newest first."""
+        day_counter = Counter()
+        month_counter = Counter()
+        for t in incognito_tickets:
+            date_str = t.get("created", "") or t.get("first_article_date", "")
+            parsed = self._parse_date(date_str)
+            if parsed:
+                day_counter[parsed.strftime("%Y-%m-%d")] += 1
+                month_counter[parsed.strftime("%Y-%m")] += 1
+        by_day = [{"date": k, "count": v} for k, v in sorted(day_counter.items(), reverse=True)]
+        by_month = [{"month": k, "count": v} for k, v in sorted(month_counter.items(), reverse=True)]
+        return {"by_day": by_day, "by_month": by_month}
+
+    def compute_resolution_stats(self, tickets):
+        """Compute median / mean / p90 resolution time in seconds.
+        Only tickets with both created and closed_at are counted.
+        Returns dict with keys: count_used, total, median_s, mean_s, p90_s.
+        """
+        durations = []
+        for t in tickets:
+            created = self._parse_datetime(t.get("created", ""))
+            closed = self._parse_datetime(t.get("closed_at", "") or "")
+            if not created or not closed:
+                continue
+            delta = (closed - created).total_seconds()
+            if delta <= 0:
+                continue
+            durations.append(delta)
+
+        total = len(tickets)
+        if not durations:
+            return {"count_used": 0, "total": total, "median_s": None, "mean_s": None, "p90_s": None}
+
+        durations.sort()
+        median_s = statistics.median(durations)
+        mean_s = statistics.mean(durations)
+        # p90
+        idx = int(0.9 * (len(durations) - 1))
+        p90_s = durations[idx]
+
+        return {
+            "count_used": len(durations),
+            "total": total,
+            "median_s": median_s,
+            "mean_s": mean_s,
+            "p90_s": p90_s,
+        }
+
+
+def format_duration(seconds):
+    """Human-readable duration. None/0 → '—'."""
+    if seconds is None:
+        return "—"
+    seconds = int(seconds)
+    if seconds <= 0:
+        return "—"
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, _ = divmod(rem, 60)
+    if days > 0:
+        return f"{days}d {hours}h" if hours else f"{days}d"
+    if hours > 0:
+        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+    return f"{minutes}m"

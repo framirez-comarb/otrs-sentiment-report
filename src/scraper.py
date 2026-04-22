@@ -25,7 +25,7 @@ from src.analyzer import is_staff_response
 
 log = logging.getLogger(__name__)
 
-REQUEST_DELAY = 0.5
+REQUEST_DELAY = 0.15
 
 KNOWN_QUEUE_IDS = {
     "SIFERE": "12", "SIFERE WEB": "35", "Módulo Consultas": "37",
@@ -607,6 +607,160 @@ class OTRSScraper:
         except Exception:
             pass
         return ""
+
+    # ══════════════════════════════════════════════════════════════
+    #  Staff Article Extraction (for incognito analysis layer)
+    # ══════════════════════════════════════════════════════════════
+
+    def fetch_staff_articles(self, tickets):
+        """For each ticket, fetch the ZoomExpand page once and extract:
+        - agent_responses: concatenated HTML-body text of all agent-* articles
+        - closed_at: ISO timestamp if state contains "cerrado", else None
+        - state_detail: ticket state string
+        """
+        total = len(tickets)
+        log.info(f"Fetching staff articles + close dates for {total} tickets...")
+        fast_path = 0
+        agent_path = 0
+        with_match = 0
+        for i, ticket in enumerate(tickets, 1):
+            tid = ticket["ticket_id"]
+            tn = ticket.get("ticket_number") or tid
+            try:
+                agent_text, closed_at, state, agent_count = self._fetch_staff_for_ticket(tid)
+                ticket["agent_responses"] = agent_text
+                ticket["closed_at"] = closed_at
+                ticket["state_detail"] = state
+                if agent_count == 0:
+                    fast_path += 1
+                else:
+                    agent_path += 1
+                    if agent_text:
+                        with_match += 1
+                # Log less verbose for speed
+                if i % 50 == 0 or agent_text:
+                    log.info(
+                        f"  [{i}/{total}] {tn}: {len(agent_text)}ch staff "
+                        f"(rows={agent_count}), state={state or '?'}, closed={closed_at or 'open'}"
+                    )
+            except Exception as e:
+                log.warning(f"  [{i}/{total}] {tn}: staff fetch failed: {e}")
+                ticket["agent_responses"] = ""
+                ticket["closed_at"] = None
+                ticket["state_detail"] = None
+        log.info(f"Staff pass done: fast_path={fast_path}, agent_path={agent_path}, with_text={with_match}")
+        return tickets
+
+    def _fetch_staff_for_ticket(self, ticket_id):
+        """Load ZoomExpand=1 and extract (agent_text, closed_at, state, agent_row_count).
+
+        Strategy:
+        1. Parse all <tr id="RowN">. Agent articles have class starting with 'agent-'.
+        2. For each agent row, probe HTMLView FileID=1..3 until one returns text/html with real content.
+        3. Close date is inferred: if state contains 'cerrado', use the MAX row Created time.
+        """
+        url = f"{self.base_url}?Action=AgentTicketZoom;TicketID={ticket_id};ZoomExpand=1"
+        resp = self._get(url)
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        state = self._extract_ticket_state(soup)
+
+        rows = self._parse_article_rows(soup)
+        agent_rows = [r for r in rows if any(c.startswith("agent-") for c in r["classes"])]
+
+        # Close date: MAX of all row Created timestamps if state says "cerrado"
+        closed_at = None
+        if state and "cerrado" in state.lower() and rows:
+            iso_dates = [r["iso_created"] for r in rows if r["iso_created"]]
+            if iso_dates:
+                closed_at = max(iso_dates)
+
+        # Fast path: no agent articles, return early
+        if not agent_rows:
+            return "", closed_at, state, 0
+
+        # Fetch body for each agent article
+        staff_texts = []
+        for r in agent_rows:
+            body = self._fetch_article_html_body(ticket_id, r["aid"])
+            if body and _is_valid_text(body) and len(body) > 30:
+                staff_texts.append(body)
+
+        return "\n\n---\n\n".join(staff_texts), closed_at, state, len(agent_rows)
+
+    def _parse_article_rows(self, soup):
+        """Parse <tr id="RowN"> article rows. Returns list of
+        {aid, classes, iso_created, from_text}.
+        """
+        rows = []
+        for row in soup.find_all("tr", id=re.compile(r"^Row\d+$")):
+            classes = row.get("class", []) or []
+            aid_input = row.find("input", class_="ArticleID")
+            aid = aid_input.get("value") if aid_input else None
+            if not aid:
+                continue
+            created_td = row.find("td", class_="Created")
+            iso_created = ""
+            if created_td:
+                sort_input = created_td.find("input", class_="SortData")
+                if sort_input:
+                    iso_created = sort_input.get("value", "")
+            from_td = row.find("td", class_="From")
+            from_text = ""
+            if from_td:
+                div = from_td.find("div")
+                if div:
+                    from_text = div.get("title", "") or div.get_text(strip=True)
+            rows.append({
+                "aid": aid,
+                "classes": classes,
+                "iso_created": iso_created,
+                "from_text": from_text,
+            })
+        return rows
+
+    def _fetch_article_html_body(self, ticket_id, article_id):
+        """Probe FileIDs 1-3 on HTMLView, return first real HTML body as text."""
+        for fid in [1, 2, 3]:
+            url = (f"{self.base_url}?Action=AgentTicketAttachment;"
+                   f"Subaction=HTMLView;TicketID={ticket_id};"
+                   f"ArticleID={article_id};FileID={fid}")
+            try:
+                resp = self._get_text_or_none(url)
+            except requests.exceptions.HTTPError:
+                # 500 means no more attachments — stop probing
+                break
+            except Exception:
+                continue
+            if resp is None:
+                continue
+            ct = resp.headers.get("Content-Type", "").lower()
+            if "text/html" not in ct:
+                continue
+            if len(resp.text) < 400:  # tiny responses are OTRS shell, not email body
+                continue
+            soup = BeautifulSoup(resp.text, "html.parser")
+            body = soup.find("body") or soup
+            text = self._clean_html_to_text(body)
+            if _is_valid_text(text) and len(text) > 30:
+                return text
+        return ""
+
+    def _extract_ticket_state(self, soup):
+        """Extract state from the ticket info sidebar.
+        OTRS 3.3.x renders it as <label>Estado:</label><p class="Value" title="...">value</p>
+        """
+        for label in soup.find_all("label"):
+            label_text = label.get_text(strip=True).lower().rstrip(":")
+            if label_text not in ("estado", "state"):
+                continue
+            val = label.find_next_sibling(["p", "div", "span"])
+            if not val:
+                continue
+            val_text = (val.get("title", "") or val.get_text(strip=True)).strip()
+            if val_text and val_text != "-":
+                return val_text
+        return None
 
     # ── Helpers ──
 

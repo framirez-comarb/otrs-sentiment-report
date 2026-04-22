@@ -8,6 +8,8 @@ charts, and word cloud visualization.
 import logging
 from datetime import datetime
 
+from src.analyzer import IntentClassifier, format_duration
+
 log = logging.getLogger(__name__)
 
 # ── Colors for intent ──
@@ -36,6 +38,11 @@ class ReportGenerator:
         top_bigrams: list = None,
         top_trigrams: list = None,
         topic_summary: dict = None,
+        incognito_tickets: list = None,
+        incognito_kpis: dict = None,
+        incognito_timeline: dict = None,
+        incognito_resolution: dict = None,
+        baseline_resolution: dict = None,
     ) -> str:
         """Generate the full HTML report."""
         ticket_rows = self._build_ticket_rows(tickets)
@@ -45,6 +52,21 @@ class ReportGenerator:
 
         # Build topic filter buttons for ticket table
         topic_filters = self._build_topic_filter_buttons(topic_summary or {})
+
+        # Incognito tab content
+        incognito_kpi_cards = self._build_incognito_kpis(
+            incognito_kpis or {}, intent_summary.get("total", 0)
+        )
+        incognito_resolution_block = self._build_incognito_resolution(
+            incognito_resolution or {}, baseline_resolution or {}
+        )
+        incognito_timeline_chart = self._build_incognito_timeline_chart(
+            incognito_timeline or {}
+        )
+        incognito_ticket_rows = self._build_incognito_ticket_rows(
+            incognito_tickets or []
+        )
+        incognito_count = (incognito_kpis or {}).get("total", 0)
 
         html = REPORT_TEMPLATE.format(
             generated_at=generated_at.strftime("%d/%m/%Y %H:%M"),
@@ -68,6 +90,12 @@ class ReportGenerator:
             ngram_lists=ngram_lists,
             topic_section=topic_section,
             topic_filters=topic_filters,
+            incognito_count=incognito_count,
+            incognito_tab_badge=f" ({incognito_count})" if incognito_count else "",
+            incognito_kpi_cards=incognito_kpi_cards,
+            incognito_resolution_block=incognito_resolution_block,
+            incognito_timeline_chart=incognito_timeline_chart,
+            incognito_ticket_rows=incognito_ticket_rows,
         )
 
         return html
@@ -398,6 +426,223 @@ class ReportGenerator:
         trigram_html = build_list(top_trigrams, "Top 10 Trigramas")
 
         return '<div class="ngram-lists">%s%s</div>' % (bigram_html, trigram_html)
+
+    # ══════════════════════════════════════════════════════════════
+    #  Incognito tab builders
+    # ══════════════════════════════════════════════════════════════
+
+    def _build_incognito_kpis(self, kpis, total_tickets):
+        """4 KPI cards: total, % of all, avg per day, top queue."""
+        total = kpis.get("total", 0)
+        pct = kpis.get("pct_of_total", 0.0)
+        avg = kpis.get("avg_per_day", 0.0)
+        top_queue = kpis.get("top_queue", "—") or "—"
+        top_queue_count = kpis.get("top_queue_count", 0)
+
+        # Escape queue string
+        top_queue_html = (
+            top_queue.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        )
+
+        return (
+            '<div class="stats-grid">'
+            f'<div class="stat-card total"><div class="stat-value">{total}</div>'
+            f'<div class="stat-label">Tickets con sugerencia</div></div>'
+            f'<div class="stat-card consulta"><div class="stat-value">{pct}%</div>'
+            f'<div class="stat-label">Del total analizado</div>'
+            f'<div class="stat-pct">{total}/{total_tickets}</div></div>'
+            f'<div class="stat-card reclamo"><div class="stat-value">{avg}</div>'
+            f'<div class="stat-label">Promedio / día</div></div>'
+            f'<div class="stat-card indeterminado"><div class="stat-value" style="font-size:1.3rem;line-height:1.4;">{top_queue_html}</div>'
+            f'<div class="stat-label">Cola con más casos</div>'
+            f'<div class="stat-pct">{top_queue_count} tickets</div></div>'
+            '</div>'
+        )
+
+    def _build_incognito_resolution(self, inc_stats, baseline_stats):
+        """Block showing median/mean/percentil-90."""
+        count_used = inc_stats.get("count_used", 0)
+        total = inc_stats.get("total", 0)
+
+        if count_used == 0:
+            return (
+                '<div class="resolution-block">'
+                '<p class="resolution-empty">No hay tickets cerrados todavía '
+                'en este subconjunto — el tiempo de resolución se podrá calcular '
+                'cuando el equipo los cierre.</p>'
+                '</div>'
+            )
+
+        median_str = format_duration(inc_stats.get("median_s"))
+        mean_str = format_duration(inc_stats.get("mean_s"))
+        p90_str = format_duration(inc_stats.get("p90_s"))
+
+        return (
+            '<div class="resolution-block">'
+            '<div class="resolution-stats">'
+            f'<div class="resolution-stat"><span class="resolution-label">Mediana</span>'
+            f'<span class="resolution-value">{median_str}</span></div>'
+            f'<div class="resolution-stat"><span class="resolution-label">Promedio</span>'
+            f'<span class="resolution-value">{mean_str}</span></div>'
+            f'<div class="resolution-stat"><span class="resolution-label">Percentil 90</span>'
+            f'<span class="resolution-value">{p90_str}</span></div>'
+            '</div>'
+            f'<p class="resolution-note">Basado en {count_used}/{total} tickets cerrados.</p>'
+            '</div>'
+        )
+
+    def _build_incognito_timeline_chart(self, timeline_data):
+        """Monthly (left) + daily (right) timeline, stacked responsive."""
+        by_day = timeline_data.get("by_day", [])
+        by_month = timeline_data.get("by_month", [])
+
+        if not by_day and not by_month:
+            return (
+                '<div class="timeline-chart">'
+                '<p class="resolution-empty">Sin tickets para graficar.</p>'
+                '</div>'
+            )
+
+        month_names = {
+            "01": "Ene", "02": "Feb", "03": "Mar", "04": "Abr",
+            "05": "May", "06": "Jun", "07": "Jul", "08": "Ago",
+            "09": "Sep", "10": "Oct", "11": "Nov", "12": "Dic",
+        }
+
+        max_month = max((m["count"] for m in by_month), default=1)
+        month_bars = ""
+        for m in by_month:
+            pct = m["count"] / max_month * 100
+            parts = m["month"].split("-")
+            label = "%s %s" % (month_names.get(parts[1], parts[1]), parts[0])
+            month_bars += (
+                '<div class="timeline-bar-wrap">'
+                '<span class="timeline-label">%s</span>'
+                '<div class="timeline-bar">'
+                '<div class="timeline-bar-fill incognito-fill" style="width:%.0f%%"></div>'
+                '</div>'
+                '<span class="timeline-count">%d</span>'
+                '</div>' % (label, pct, m["count"])
+            )
+
+        max_day = max((d["count"] for d in by_day), default=1)
+        day_bars = ""
+        for d in by_day:
+            pct = d["count"] / max_day * 100
+            short_date = d["date"][5:]
+            day_bars += (
+                '<div class="timeline-bar-wrap">'
+                '<span class="timeline-label">%s</span>'
+                '<div class="timeline-bar">'
+                '<div class="timeline-bar-fill incognito-fill" style="width:%.0f%%"></div>'
+                '</div>'
+                '<span class="timeline-count">%d</span>'
+                '</div>' % (short_date, pct, d["count"])
+            )
+
+        return (
+            '<div class="timeline-charts">'
+            '<div class="timeline-chart">'
+            '<h3 class="timeline-title">Por mes</h3>'
+            '<div class="timeline-bars">%s</div></div>'
+            '<div class="timeline-chart">'
+            '<h3 class="timeline-title">Por día</h3>'
+            '<div class="timeline-bars">%s</div></div>'
+            '</div>' % (month_bars, day_bars)
+        )
+
+    def _build_incognito_ticket_rows(self, tickets):
+        """Ticket cards for incognito tab — shows excerpt of agent response."""
+        if not tickets:
+            return (
+                '<div class="empty-state">'
+                '<p>No se encontraron tickets en los que el agente haya sugerido '
+                'modo incógnito / navegación privada en el período analizado.</p>'
+                '</div>'
+            )
+
+        rows = []
+        for idx, t in enumerate(tickets):
+            intent = t.get("intent", "INDETERMINADO")
+            color = INTENT_COLORS.get(intent, "#636e72")
+            icon = INTENT_ICONS.get(intent, "")
+            label = t.get("intent_label", "Indeterminado")
+
+            excerpt = t.get("incognito_excerpt", "") or ""
+            excerpt_html = (
+                excerpt.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            )
+
+            # Highlight the matching patterns in the excerpt
+            for term in ("modo incógnito", "modo incognito",
+                         "navegación privada", "navegacion privada",
+                         "ventana privada", "incógnito", "incognito",
+                         "InPrivate", "in private", "modo invitado"):
+                # case-insensitive single replacement via regex would be cleaner,
+                # but keep it simple with manual case variations
+                for variant in (term, term.capitalize(), term.upper()):
+                    if variant in excerpt_html:
+                        excerpt_html = excerpt_html.replace(
+                            variant, f'<mark class="inc-match">{variant}</mark>'
+                        )
+
+            agent_full = t.get("agent_responses", "") or ""
+            agent_full_html = (
+                agent_full.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&quot;")
+                .replace("\n", "<br>")
+            )
+
+            title = (
+                t.get("title", "")
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+            ticket_number = t.get("ticket_number", t.get("ticket_id", ""))
+            queue = (
+                t.get("queue", "")
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+            created = t.get("created", "")
+
+            closed_at = t.get("closed_at")
+            resolution_badge = ""
+            if closed_at:
+                c = IntentClassifier._parse_datetime(created)
+                cl = IntentClassifier._parse_datetime(closed_at)
+                if c and cl and cl > c:
+                    dur = format_duration((cl - c).total_seconds())
+                    resolution_badge = (
+                        f' <span class="badge resolution-badge">Resuelto en {dur}</span>'
+                    )
+                else:
+                    resolution_badge = ' <span class="badge resolution-badge">Cerrado</span>'
+
+            row = f"""
+            <div class="ticket-card incognito-card">
+                <div class="ticket-header" onclick="toggleBody('inc-body-{idx}', this)">
+                    <div class="ticket-meta-row">
+                        <span class="ticket-number">{ticket_number}</span>
+                        <span class="badge" style="--badge-color: {color}">{icon} {label}</span>{resolution_badge}
+                        <span class="ticket-queue">{queue}</span>
+                        <span class="ticket-date">{created}</span>
+                        <span class="expand-icon">&#x25BC;</span>
+                    </div>
+                    <div class="ticket-title">{title}</div>
+                    <div class="ticket-preview inc-excerpt">&#x1F4AC; {excerpt_html}</div>
+                </div>
+                <div class="ticket-body" id="inc-body-{idx}">
+                    <div class="ticket-from"><strong>Respuesta completa del agente:</strong></div>
+                    <div class="ticket-body-text">{agent_full_html}</div>
+                </div>
+            </div>"""
+            rows.append(row)
+        return "\n".join(rows)
 
 
 # ── HTML Template ──
@@ -1212,6 +1457,168 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
     .ticket-meta-row {{ gap: 0.4rem; }}
     .ticket-queue, .ticket-date {{ display: none; }}
   }}
+
+  /* ── Tabs ── */
+  .tabs {{
+    display: flex;
+    gap: 0.5rem;
+    border-bottom: 1px solid var(--border);
+    margin: 1.5rem 0 0;
+    flex-wrap: wrap;
+  }}
+
+  .tab {{
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.95rem;
+    font-weight: 500;
+    padding: 0.7rem 1.3rem;
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: 8px 8px 0 0;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.2s;
+    margin-bottom: -1px;
+  }}
+
+  .tab:hover {{
+    color: var(--text-secondary);
+    background: var(--bg-card);
+  }}
+
+  .tab.active {{
+    color: var(--text-primary);
+    background: var(--bg-card);
+    border-color: var(--border);
+    border-bottom-color: var(--bg-card);
+  }}
+
+  .tab-panel {{
+    display: none;
+    animation: fadeIn 0.4s ease both;
+  }}
+
+  .tab-panel.active {{
+    display: block;
+  }}
+
+  /* ── Incognito tab ── */
+  .incognito-intro {{
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.2rem 1.5rem;
+    margin: 1.5rem 0 0.5rem;
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }}
+
+  .incognito-intro strong {{
+    color: var(--text-primary);
+  }}
+
+  .timeline-bar-fill.incognito-fill {{
+    background: linear-gradient(90deg, #a855f7, #6366f1);
+  }}
+
+  .resolution-block {{
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.5rem;
+    margin-bottom: 1rem;
+  }}
+
+  .resolution-title {{
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 1rem;
+  }}
+
+  .resolution-stats {{
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1rem;
+    margin-bottom: 0.8rem;
+  }}
+
+  @media (max-width: 600px) {{
+    .resolution-stats {{ grid-template-columns: 1fr; }}
+  }}
+
+  .resolution-stat {{
+    background: var(--bg-primary);
+    border-radius: 8px;
+    padding: 0.9rem 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }}
+
+  .resolution-label {{
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }}
+
+  .resolution-value {{
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: #a855f7;
+  }}
+
+  .resolution-note {{
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }}
+
+  .resolution-baseline {{
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin-top: 0.5rem;
+    padding-top: 0.8rem;
+    border-top: 1px solid var(--border);
+  }}
+
+  .resolution-empty {{
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    font-style: italic;
+  }}
+
+  .inc-excerpt {{
+    color: var(--text-secondary) !important;
+    font-size: 0.85rem !important;
+  }}
+
+  mark.inc-match {{
+    background: rgba(168, 85, 247, 0.25);
+    color: #d8b4fe;
+    padding: 0.05rem 0.3rem;
+    border-radius: 3px;
+    font-weight: 500;
+  }}
+
+  .resolution-badge {{
+    --badge-color: #a855f7;
+    font-size: 0.7rem;
+    padding: 0.15rem 0.5rem;
+  }}
+
+  .empty-state {{
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 2rem;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+  }}
 </style>
 </head>
 <body>
@@ -1228,6 +1635,15 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
       <span class="meta-item">Per\u00edodo: <strong>{date_from} \u2192 {date_to}</strong></span>
     </div>
   </header>
+
+  <!-- Tabs nav -->
+  <div class="tabs" role="tablist">
+    <button class="tab active" data-tab="general" onclick="switchTab(event, 'general')">&#x1F4CA; An\u00e1lisis General</button>
+    <button class="tab" data-tab="incognito" onclick="switchTab(event, 'incognito')">&#x1F575;&#xFE0F; Modo Inc\u00f3gnito{incognito_tab_badge}</button>
+  </div>
+
+  <!-- Tab panel: General -->
+  <div id="tab-general" class="tab-panel active">
 
   <!-- Stats -->
   <div class="stats-grid">
@@ -1356,14 +1772,46 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
         <button class="filter-btn" onclick="filterTickets('RECLAMO')">&#x26A0; Reclamos</button>
         <button class="filter-btn" onclick="filterTickets('INDETERMINADO')">&#x2796; Indeterminados</button>
         {topic_filters}
-        <button class="filter-btn" onclick="expandAll(true)" style="margin-left: auto;">Expandir todos</button>
-        <button class="filter-btn" onclick="expandAll(false)">Colapsar todos</button>
+        <button class="filter-btn" onclick="expandAll('general', true)" style="margin-left: auto;">Expandir todos</button>
+        <button class="filter-btn" onclick="expandAll('general', false)">Colapsar todos</button>
       </div>
       <div id="tickets-body">
         {ticket_rows}
       </div>
     </div>
   </div>
+
+  </div><!-- /tab-general -->
+
+  <!-- Tab panel: Incognito -->
+  <div id="tab-incognito" class="tab-panel">
+
+    {incognito_kpi_cards}
+
+    <div class="section">
+      <h2 class="section-title">Tiempo de resoluci\u00f3n</h2>
+      {incognito_resolution_block}
+    </div>
+
+    <div class="section">
+      <h2 class="section-title">Tickets por d\u00eda</h2>
+      {incognito_timeline_chart}
+    </div>
+
+    <div class="section">
+      <h2 class="section-title">Listado de tickets ({incognito_count})</h2>
+      <div class="table-container">
+        <div class="table-controls">
+          <button class="filter-btn" onclick="expandAll('incognito', true)" style="margin-left: auto;">Expandir todos</button>
+          <button class="filter-btn" onclick="expandAll('incognito', false)">Colapsar todos</button>
+        </div>
+        <div id="incognito-tickets-body">
+          {incognito_ticket_rows}
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /tab-incognito -->
 
   <footer class="footer">
     Generado autom\u00e1ticamente el {generated_at} &mdash;
@@ -1401,12 +1849,24 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
   }}
 }})();
 
-// ── Filter state ──
+// ── Tab switching ──
+function switchTab(ev, name) {{
+  document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  if (ev && ev.currentTarget) ev.currentTarget.classList.add('active');
+  const panel = document.getElementById('tab-' + name);
+  if (panel) panel.classList.add('active');
+}}
+
+// ── Filter state (general tab) ──
 let currentIntentFilter = 'ALL';
 let currentTopicFilter = 'ALL';
 
 function applyFilters() {{
-  const cards = document.querySelectorAll('.ticket-card');
+  // Scope to the general tab so the incognito tab's cards are never affected.
+  const scope = document.getElementById('tab-general');
+  if (!scope) return;
+  const cards = scope.querySelectorAll('.ticket-card');
   cards.forEach(card => {{
     const intentMatch = currentIntentFilter === 'ALL' || card.dataset.intent === currentIntentFilter;
     const topicMatch = currentTopicFilter === 'ALL' || card.dataset.topic === currentTopicFilter;
@@ -1417,11 +1877,14 @@ function applyFilters() {{
 // ── Filter by intent ──
 function filterTickets(intent) {{
   currentIntentFilter = intent;
-  // Update intent button states
-  document.querySelectorAll('.filter-btn:not(.topic-filter-btn)').forEach(b => {{
-    if (b.textContent.includes('Expandir') || b.textContent.includes('Colapsar')) return;
-    b.classList.remove('active');
-  }});
+  // Update intent button states (scoped to general tab)
+  const scope = document.getElementById('tab-general');
+  if (scope) {{
+    scope.querySelectorAll('.filter-btn:not(.topic-filter-btn)').forEach(b => {{
+      if (b.textContent.includes('Expandir') || b.textContent.includes('Colapsar')) return;
+      b.classList.remove('active');
+    }});
+  }}
   event.target.classList.add('active');
   applyFilters();
 }}
@@ -1445,12 +1908,14 @@ function toggleBody(bodyId, headerEl) {{
   }}
 }}
 
-function expandAll(expand) {{
-  document.querySelectorAll('.ticket-body').forEach(b => {{
+function expandAll(tabName, expand) {{
+  const scope = document.getElementById('tab-' + tabName);
+  if (!scope) return;
+  scope.querySelectorAll('.ticket-body').forEach(b => {{
     if (expand) b.classList.add('visible');
     else b.classList.remove('visible');
   }});
-  document.querySelectorAll('.ticket-header').forEach(h => {{
+  scope.querySelectorAll('.ticket-header').forEach(h => {{
     if (expand) h.classList.add('expanded');
     else h.classList.remove('expanded');
   }});
