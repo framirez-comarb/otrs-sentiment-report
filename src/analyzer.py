@@ -435,8 +435,10 @@ _DISCARD_TITLE_SUBSTRINGS = (
     "nueva factura disponible",
     # ARCA / notifications
     "multa de",
-    # Internal
-    "comarb - notas entrantes",
+    # NOTE: "comarb - notas entrantes" is intentionally NOT here. Those are
+    # internal notes that sometimes carry real staff interaction (incl.
+    # incognito suggestions). They are handled by the SOFT rule in
+    # _should_discard: discarded only when there's no staff engagement.
 )
 _DISCARD_BODY_SUBSTRINGS = (
     "merged ticket",
@@ -614,11 +616,7 @@ class IntentClassifier:
         title_l = title.lower().strip()
         body_l = body.lower().strip()
 
-        # ── HARD rules ───────────────────────────────────────────────
-        # SUMA BOT tickets whose trailer is just a greeting/ack/garbage
-        # (ok, gracias, buenos días, perfecto, hola, .,  CUIT only, __file__, Index:N, etc.)
-        if _is_suma_bot_trivial(title_l):
-            return True
+        # ── HARD rules (always discard; these never indicate a real case) ──
         # Title equals body (no useful content beyond the subject line)
         if title_l and title_l == body_l:
             return True
@@ -634,19 +632,31 @@ class IntentClassifier:
             return True
 
         # ── SOFT rules (only when there's no real staff engagement) ──
-        # "Sistema …" sender: typically auto-forwarded tickets. But the SIFERE
-        # relay ALSO forwards real user emails as "Sistema SIFERE WEB" — those
-        # get staff replies and are legitimate support cases. Keep them if we
-        # have substantive agent content.
-        # Same logic for bodies that start with "Estimado/a <nombre>": usually
-        # a staff reply that got stored as user_message_body; if there's also
-        # agent_responses with real content, the ticket is real.
+        # A ticket with a substantial captured `agent_responses` (≥100 chars)
+        # means a human worked on the case — it's a legitimate support ticket
+        # even if other heuristics below would normally flag it as noise.
+        #
+        # The rules below catch edge cases where our scraper couldn't extract
+        # the user's original message (SUMA BOT trivial trailer like `ok`,
+        # `__file__`, `__image__` — the original email was an HTML-only
+        # attachment; `Sistema …` sender on forwarded relays; body starting
+        # with "Estimado/a" when the staff reply was stored as
+        # user_message_body; `Comarb - Notas Entrantes` internal notes).
         has_staff_engagement = bool(
             agent_responses and len(agent_responses.strip()) >= 100
         )
         if not has_staff_engagement:
+            # SUMA BOT trailer is a greeting/ack/CUIT/pseudo-attachment only
+            if _is_suma_bot_trivial(title_l):
+                return True
+            # Internal notes routed through "Comarb - Notas Entrantes ..."
+            if "comarb - notas entrantes" in title_l:
+                return True
+            # SIFERE relay forwarded email (no staff picked it up)
             if sender.strip().lower().startswith("sistema "):
                 return True
+            # Staff reply accidentally stored as user_message_body, with no
+            # other staff follow-up captured
             if re.match(r"estimad[oa]/?a?\s+\w", body_l):
                 return True
 
