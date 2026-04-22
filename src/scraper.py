@@ -11,12 +11,15 @@ Key points:
 - Binary detection on raw bytes to avoid returning garbage
 """
 
+import os
 import re
 import time
 import logging
+import threading
 from datetime import datetime
 from urllib.parse import urljoin
 from html import unescape
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 from bs4 import BeautifulSoup
@@ -617,13 +620,27 @@ class OTRSScraper:
         - agent_responses: concatenated HTML-body text of all agent-* articles
         - closed_at: ISO timestamp if state contains "cerrado", else None
         - state_detail: ticket state string
+
+        Parallelized across tickets using ThreadPoolExecutor. The `requests.Session`
+        is thread-safe; the only shared-mutable state is the login challenge token,
+        which is set before the pool starts and never mutated during fetches.
+        Worker count via env var STAFF_WORKERS (default 8 — balances throughput
+        with politeness to OTRS). Set STAFF_WORKERS=1 for sequential/debug mode.
         """
         total = len(tickets)
-        log.info(f"Fetching staff articles + close dates for {total} tickets...")
-        fast_path = 0
-        agent_path = 0
-        with_match = 0
-        for i, ticket in enumerate(tickets, 1):
+        try:
+            max_workers = int(os.environ.get("STAFF_WORKERS", "8"))
+        except ValueError:
+            max_workers = 8
+        max_workers = max(1, min(max_workers, 32))
+
+        log.info(f"Fetching staff articles + close dates for {total} tickets "
+                 f"with {max_workers} parallel worker(s)...")
+
+        counters = {"fast_path": 0, "agent_path": 0, "with_match": 0, "done": 0, "failed": 0}
+        counters_lock = threading.Lock()
+
+        def process_one(ticket):
             tid = ticket["ticket_id"]
             tn = ticket.get("ticket_number") or tid
             try:
@@ -631,24 +648,42 @@ class OTRSScraper:
                 ticket["agent_responses"] = agent_text
                 ticket["closed_at"] = closed_at
                 ticket["state_detail"] = state
-                if agent_count == 0:
-                    fast_path += 1
-                else:
-                    agent_path += 1
-                    if agent_text:
-                        with_match += 1
-                # Log less verbose for speed
-                if i % 50 == 0 or agent_text:
+                with counters_lock:
+                    counters["done"] += 1
+                    if agent_count == 0:
+                        counters["fast_path"] += 1
+                    else:
+                        counters["agent_path"] += 1
+                        if agent_text:
+                            counters["with_match"] += 1
+                    done = counters["done"]
+                if done % 50 == 0 or agent_text:
                     log.info(
-                        f"  [{i}/{total}] {tn}: {len(agent_text)}ch staff "
+                        f"  [{done}/{total}] {tn}: {len(agent_text)}ch staff "
                         f"(rows={agent_count}), state={state or '?'}, closed={closed_at or 'open'}"
                     )
             except Exception as e:
-                log.warning(f"  [{i}/{total}] {tn}: staff fetch failed: {e}")
                 ticket["agent_responses"] = ""
                 ticket["closed_at"] = None
                 ticket["state_detail"] = None
-        log.info(f"Staff pass done: fast_path={fast_path}, agent_path={agent_path}, with_text={with_match}")
+                with counters_lock:
+                    counters["done"] += 1
+                    counters["failed"] += 1
+                    done = counters["done"]
+                log.warning(f"  [{done}/{total}] {tn}: staff fetch failed: {e}")
+
+        if max_workers == 1:
+            for t in tickets:
+                process_one(t)
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                list(ex.map(process_one, tickets))
+
+        log.info(
+            f"Staff pass done: fast_path={counters['fast_path']}, "
+            f"agent_path={counters['agent_path']}, with_text={counters['with_match']}, "
+            f"failed={counters['failed']}"
+        )
         return tickets
 
     def _fetch_staff_for_ticket(self, ticket_id):
