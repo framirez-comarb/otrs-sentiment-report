@@ -447,6 +447,12 @@ _DISCARD_BODY_SUBSTRINGS = (
     # Phishing / webmail scams
     "su cuenta sera suspendida", "su cuenta será suspendida",
     "tu factura ya esta disponible",
+    # Payment-processor auto-notifications (Mercado Pago transfer confirms etc.)
+    # — all use the same template with "%recipient_email%" placeholder and
+    # "Su operacion fue procesada correctamente" phrasing.
+    "%recipient_email%",
+    "su operacion fue procesada correctamente",
+    "transaccion efectuada",
 )
 _DISCARD_BODY_EXACT = {"", "file", "image"}
 _DISCARD_TITLE_EXACT = {"merged ticket"}
@@ -632,9 +638,13 @@ class IntentClassifier:
             return True
 
         # ── SOFT rules (only when there's no real staff engagement) ──
-        # A ticket with a substantial captured `agent_responses` (≥100 chars)
-        # means a human worked on the case — it's a legitimate support ticket
-        # even if other heuristics below would normally flag it as noise.
+        # A ticket with a substantial captured `agent_responses` (≥500 chars)
+        # means a human worked on the case with real content — it's a
+        # legitimate support ticket even if other heuristics below would
+        # normally flag it as noise. The 500-char threshold is empirical:
+        # shorter agent replies (300-450 chars) on SUMA BOT "ok"/"__file__"
+        # tickets are usually generic acknowledgments ("envíenos captura")
+        # without actionable content, so we drop them.
         #
         # The rules below catch edge cases where our scraper couldn't extract
         # the user's original message (SUMA BOT trivial trailer like `ok`,
@@ -643,7 +653,7 @@ class IntentClassifier:
         # with "Estimado/a" when the staff reply was stored as
         # user_message_body; `Comarb - Notas Entrantes` internal notes).
         has_staff_engagement = bool(
-            agent_responses and len(agent_responses.strip()) >= 100
+            agent_responses and len(agent_responses.strip()) >= 500
         )
         if not has_staff_engagement:
             # SUMA BOT trailer is a greeting/ack/CUIT/pseudo-attachment only
