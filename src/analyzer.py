@@ -595,18 +595,26 @@ def detect_incognito_suggestion(text):
 class IntentClassifier:
 
     @staticmethod
-    def _should_discard(title: str, body: str, sender: str = "", ticket_number: str = "") -> bool:
-        """Return True if ticket should be excluded entirely from the report."""
+    def _should_discard(title: str, body: str, sender: str = "",
+                        ticket_number: str = "", agent_responses: str = "") -> bool:
+        """Return True if ticket should be excluded entirely from the report.
+
+        The rules split into two groups:
+          - HARD rules: always discard (explicit tickets, spam/phishing, bounces,
+            SUMA BOT trivial trailers, empty bodies, title == body, etc.).
+          - SOFT rules (sender-based / body-starts-with-Estimado): these catch
+            tickets where our scraper stored a staff reply as the "user message".
+            Many of those are still REAL support cases — if the ticket has a
+            substantial captured `agent_responses` we know a human worked on it,
+            so we keep it and let the incognito/intent analysis see it.
+        """
         if ticket_number in _DISCARD_TICKETS:
             return True
+
         title_l = title.lower().strip()
         body_l = body.lower().strip()
-        # Staff responses: sender starts with "Sistema " (e.g. "Sistema SIFERE WEB")
-        if sender.strip().lower().startswith("sistema "):
-            return True
-        # Staff response starting with "Estimado/a <nombre>"
-        if re.match(r"estimad[oa]/?a?\s+\w", body_l):
-            return True
+
+        # ── HARD rules ───────────────────────────────────────────────
         # SUMA BOT tickets whose trailer is just a greeting/ack/garbage
         # (ok, gracias, buenos días, perfecto, hola, .,  CUIT only, __file__, Index:N, etc.)
         if _is_suma_bot_trivial(title_l):
@@ -624,6 +632,24 @@ class IntentClassifier:
             return True
         if any(s in body_l for s in _DISCARD_BODY_SUBSTRINGS):
             return True
+
+        # ── SOFT rules (only when there's no real staff engagement) ──
+        # "Sistema …" sender: typically auto-forwarded tickets. But the SIFERE
+        # relay ALSO forwards real user emails as "Sistema SIFERE WEB" — those
+        # get staff replies and are legitimate support cases. Keep them if we
+        # have substantive agent content.
+        # Same logic for bodies that start with "Estimado/a <nombre>": usually
+        # a staff reply that got stored as user_message_body; if there's also
+        # agent_responses with real content, the ticket is real.
+        has_staff_engagement = bool(
+            agent_responses and len(agent_responses.strip()) >= 100
+        )
+        if not has_staff_engagement:
+            if sender.strip().lower().startswith("sistema "):
+                return True
+            if re.match(r"estimad[oa]/?a?\s+\w", body_l):
+                return True
+
         return False
 
     @staticmethod
@@ -712,6 +738,7 @@ class IntentClassifier:
                 t.get("user_message_body", "") or t.get("first_article_body", "") or "",
                 t.get("first_article_from", "") or "",
                 t.get("ticket_number", "") or "",
+                t.get("agent_responses", "") or "",
             )
         ]
         total = len(tickets)
