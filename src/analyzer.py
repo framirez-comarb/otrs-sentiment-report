@@ -475,6 +475,72 @@ INCOGNITO_PATTERNS = [
     "modo invitado",
 ]
 
+# ── SUMA BOT trivial trailers (ticket titles that end only with filler) ──
+# The trailer is whatever comes after "SUMA BOT - <QUEUE> - <CUIT> - ". If the
+# trailer matches one of these, the ticket has no substantive content.
+# Trailers are normalized: lowercased, accent-stripped, trailing punctuation
+# stripped, whitespace collapsed. Compared against _SUMA_BOT_TRIVIAL_EXACT
+# first (fast set lookup), then against _SUMA_BOT_TRIVIAL_REGEXES.
+_SUMA_BOT_TRIVIAL_EXACT = {
+    # empty / just punctuation (also reached after rstrip-ing '.' '!' '?' ',')
+    "",
+    # ack / confirmation
+    "ok", "oka", "okey", "okay", "okis",
+    "bueno", "buenisimo",
+    "gracias", "muchas gracias", "mil gracias",
+    "perfecto", "perfect",
+    "dale", "listo", "entendido", "confirmado",
+    "si", "bien", "esta bien", "estoy bien", "todo bien",
+    # greetings
+    "hi",
+    "buen dia", "buenos dias",
+    "buena tarde", "buenas tardes",
+    "buena noche", "buenas noches",
+    "saludos", "saludos cordiales",
+    # SUMA BOT internal pseudo-attachments
+    "__file__", "__image__",
+}
+
+_SUMA_BOT_TRIVIAL_REGEXES = [
+    re.compile(r"^ho+la+$"),                # hola, holaa, holaaaaa, hoola
+    re.compile(r"^holi+$"),                 # holi, holii
+    re.compile(r"^hi+$"),                   # hi, hiii
+    re.compile(r"^ok+$"),                   # ok, okkk
+    re.compile(r"^oka+y?$"),                # oka, okay, okaay
+    re.compile(r"^bueno+$"),                # bueno, buenoooo
+    re.compile(r"^gracia?s+$"),             # gracias, graciass
+    re.compile(r"^perfecto+$"),             # perfecto, perfectooo
+    re.compile(r"^si+$"),                   # si, siii
+    re.compile(r"^\d{11}$"),                # just a CUIT, no text
+    re.compile(r"^index:\s*\d+,\s*size:\s*\d+$"),  # "Index: N, Size: M"
+]
+
+# "Trailer" extractor: grabs whatever follows "SUMA BOT - <QUEUE> - <CUIT> - ".
+_SUMA_BOT_TRAILER_RE = re.compile(
+    r"^suma bot\s+-\s+\w+\s+-\s+\d{11}\s+-\s+(.+?)\s*$"
+)
+
+
+def _is_suma_bot_trivial(title_lower):
+    """Return True if the SUMA BOT title has only a trivial trailer (greeting, ack, etc.)."""
+    m = _SUMA_BOT_TRAILER_RE.match(title_lower)
+    if not m:
+        return False
+    trailer = m.group(1).strip()
+    # Strip common trailing punctuation: "Buenos días." / "perfecto!" / "hola?"
+    trailer = trailer.rstrip(".,:;!?¡¿ ")
+    # Strip leading punctuation/emoji noise but keep alphanumerics
+    trailer = trailer.lstrip(".,:;!?¡¿ ")
+    # Normalize accents + lowercase + collapse whitespace
+    trailer = _normalize_text(trailer)
+    trailer = re.sub(r"\s+", " ", trailer).strip()
+    if trailer in _SUMA_BOT_TRIVIAL_EXACT:
+        return True
+    for pat in _SUMA_BOT_TRIVIAL_REGEXES:
+        if pat.match(trailer):
+            return True
+    return False
+
 
 def _normalize_text(text):
     """Lowercase and strip accents for matching."""
@@ -541,12 +607,9 @@ class IntentClassifier:
         # Staff response starting with "Estimado/a <nombre>"
         if re.match(r"estimad[oa]/?a?\s+\w", body_l):
             return True
-        # SUMA BOT tickets with trivial/noise message (ok, oka, bueno, __file__, Index: 0)
-        if re.match(r"suma bot\s+-\s+\w+\s+-\s+\d{11}\s+-\s+(ok|oka|bueno)\s*$", title_l):
-            return True
-        if re.match(r"suma bot\s+-\s+\w+\s+-\s+\d{11}\s+-\s+__(file|image)__\s*$", title_l):
-            return True
-        if re.match(r"suma bot\s+-\s+\w+\s+-\s+\d{11}\s+-\s+index:\s*\d+,\s*size:\s*\d+\s*$", title_l):
+        # SUMA BOT tickets whose trailer is just a greeting/ack/garbage
+        # (ok, gracias, buenos días, perfecto, hola, .,  CUIT only, __file__, Index:N, etc.)
+        if _is_suma_bot_trivial(title_l):
             return True
         # Title equals body (no useful content beyond the subject line)
         if title_l and title_l == body_l:
