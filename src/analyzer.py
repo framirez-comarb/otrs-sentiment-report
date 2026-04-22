@@ -489,6 +489,66 @@ INCOGNITO_PATTERNS = [
     "modo invitado",
 ]
 
+# ── Staff-response hints (fallback intent inference) ──
+# Used when the user's own message lacks classification signals (e.g. the
+# scraper captured the staff reply as user_message_body, or the original
+# email was an HTML attachment that couldn't be extracted). The heuristic:
+# the staff's reply language tends to mirror what the user asked.
+_STAFF_HINTS_RECLAMO = [
+    # Troubleshooting / bug-diagnostic language
+    "modo incognito", "navegacion privada", "ventana privada",
+    "cache del navegador", "limpie el cache", "borre la cache", "borre el cache",
+    "elimine el cache", "vaciar cache", "eliminar cache",
+    "enviar captura", "envienos captura", "captura de pantalla",
+    "pantallazo", "screenshot", "mandanos captura",
+    "lo reportare", "reportamos el error", "lo reporto", "reportar el error",
+    "vuelva a intentar", "intente nuevamente", "reintente",
+    "cerrar sesion", "cerra sesion", "volver a iniciar sesion",
+    "mientras lo reporto", "mientras reporto",
+    "reportado el error", "error reportado",
+    "enviar pantalla", "enviar el error",
+    "esta fallando", "no esta funcionando",
+]
+_STAFF_HINTS_CONSULTA = [
+    # Answering a how-to / definitional / normative question
+    "corresponde cargar", "corresponde presentar", "corresponde declarar",
+    "no corresponde", "efectivamente corresponde", "corresponde que",
+    "debe cargar", "debes cargar", "debe presentar", "debes presentar",
+    "debe declarar", "debe completar",
+    "tenes que cargar", "tenes que presentar", "tenes que completar",
+    "el procedimiento es", "los pasos son", "para presentar la dj",
+    "segun la normativa", "segun el articulo", "segun el art",
+    "es un requisito", "es requisito para",
+    "puede hacerlo", "puede realizarlo",
+    "para realizar el", "para realizar la",
+    "es correcto", "efectivamente", "si, corresponde",
+]
+
+
+def classify_from_staff_response(agent_responses):
+    """Infer user's original intent from staff reply patterns.
+
+    Returns (intent, label) or (None, None) if no clear signal.
+    Used as a fallback when user_message_body lacks CONSULTA/RECLAMO markers.
+    Logic: if staff did troubleshooting (incógnito, captura, reporte error)
+    the user had a RECLAMO; if staff answered a how-to / normative question
+    (corresponde, debe, según) the user had a CONSULTA.
+    """
+    if not agent_responses or len(agent_responses.strip()) < 40:
+        return None, None
+    text = _normalize_text(agent_responses)
+
+    reclamo_hits = sum(1 for p in _STAFF_HINTS_RECLAMO if p in text)
+    consulta_hits = sum(1 for p in _STAFF_HINTS_CONSULTA if p in text)
+
+    # Require clear majority, otherwise stay indeterminate
+    if reclamo_hits >= consulta_hits * 2 and reclamo_hits >= 1:
+        return "RECLAMO", "Reclamo/Error"
+    if consulta_hits >= reclamo_hits * 2 and consulta_hits >= 1:
+        return "CONSULTA", "Consulta/Duda/Solicitud"
+    return None, None
+
+
 # ── SUMA BOT trivial trailers (ticket titles that end only with filler) ──
 # The trailer is whatever comes after "SUMA BOT - <QUEUE> - <CUIT> - ". If the
 # trailer matches one of these, the ticket has no substantive content.
@@ -784,12 +844,29 @@ class IntentClassifier:
 
             text = (title + "\n" + body) if title else body
             if not text or len(text.strip()) < 10:
-                ticket["intent"] = "INDETERMINADO"
-                ticket["intent_label"] = "Indeterminado"
-                ticket["confidence"] = 0.0
-                log.info("  [%d/%d] Empty/short -> Indeterminado", i, total)
+                # Try staff-response fallback before giving up
+                ai, al = classify_from_staff_response(ticket.get("agent_responses", "") or "")
+                if ai:
+                    ticket["intent"] = ai
+                    ticket["intent_label"] = al
+                    ticket["confidence"] = 0.4
+                    log.info("  [%d/%d] Empty/short → staff-fallback → %s", i, total, al)
+                else:
+                    ticket["intent"] = "INDETERMINADO"
+                    ticket["intent_label"] = "Indeterminado"
+                    ticket["confidence"] = 0.0
+                    log.info("  [%d/%d] Empty/short -> Indeterminado", i, total)
                 continue
             result = self._classify_intent(body, title)
+            # If main classifier couldn't decide, try staff-response fallback
+            if result["intent"] == "INDETERMINADO":
+                ai, al = classify_from_staff_response(ticket.get("agent_responses", "") or "")
+                if ai:
+                    ticket["intent"] = ai
+                    ticket["intent_label"] = al
+                    ticket["confidence"] = 0.4
+                    log.info("  [%d/%d] Indeterminado → staff-fallback → %s", i, total, al)
+                    continue
             ticket["intent"] = result["intent"]
             ticket["intent_label"] = result["intent_label"]
             ticket["confidence"] = result["confidence"]
