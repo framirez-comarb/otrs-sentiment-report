@@ -2077,7 +2077,16 @@ async function generarPDF() {{
   const pdfStyle = document.createElement('style');
   pdfStyle.id = 'pdf-page-break-rules';
   pdfStyle.textContent = (
-    '.section, .stats-grid, .chart-container, .timeline-charts, .ngram-lists, .timeline-chart, .ngram-list, .resolution-block {{ page-break-inside: avoid !important; break-inside: avoid !important; }}' +
+    // Disable animations/transitions: html2canvas catches mid-fadeIn and content looks washed out
+    '*, *::before, *::after {{ animation: none !important; animation-delay: 0s !important; animation-duration: 0s !important; transition: none !important; opacity: 1 !important; transform: none !important; }}' +
+    // The h1 uses -webkit-background-clip: text; html2canvas renders it as a gradient banner. Flatten.
+    '.header h1 {{ background: none !important; -webkit-text-fill-color: #1a1d27 !important; color: #1a1d27 !important; }}' +
+    // Force one block per page so charts/tables never get cut between pages
+    '.section, .stats-grid {{ page-break-before: always !important; break-before: page !important; page-break-inside: avoid !important; break-inside: avoid !important; }}' +
+    // Keep the first stats-grid on page 1 with the header
+    '.tab-panel.active > .stats-grid:first-of-type, #tab-general > .stats-grid:first-of-type {{ page-break-before: avoid !important; break-before: avoid !important; }}' +
+    // Inner blocks: never split
+    '.chart-container, .timeline-charts, .ngram-lists, .timeline-chart, .ngram-list, .resolution-block, .wordcloud-container {{ page-break-inside: avoid !important; break-inside: avoid !important; }}' +
     'tr, thead {{ page-break-inside: avoid !important; break-inside: avoid !important; }}' +
     '.stat-card, .timeline-bar-wrap, .ngram-item {{ break-inside: avoid !important; }}'
   );
@@ -2107,11 +2116,16 @@ async function generarPDF() {{
     el.style.display = 'none';
   }}));
 
-  // 5. Ocultar el card .table-container vacío tras esconder su contenido
-  document.querySelectorAll('.table-container').forEach(el => {{
-    const o = el.style.display;
-    restore.push(() => {{ el.style.display = o; }});
-    el.style.display = 'none';
+  // 5. Ocultar la SECTION entera que envuelve los listados de tickets
+  //    (sino queda el título "Detalle por Ticket" / "Listado de tickets" huérfano).
+  ['#tickets-body', '#incognito-tickets-body'].forEach(sel => {{
+    const body = document.querySelector(sel);
+    if (!body) return;
+    const section = body.closest('.section');
+    if (!section) return;
+    const o = section.style.display;
+    restore.push(() => {{ section.style.display = o; }});
+    section.style.display = 'none';
   }});
 
   // 6. Re-render donut con colores del tema actual (claro)
