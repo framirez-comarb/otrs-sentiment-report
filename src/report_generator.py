@@ -2068,8 +2068,8 @@ async function generarPDF() {{
   if (container) {{
     const o = {{ maxWidth: container.style.maxWidth, width: container.style.width, padding: container.style.padding, margin: container.style.margin }};
     restore.push(() => {{ Object.assign(container.style, o); }});
-    container.style.maxWidth = '1100px';
-    container.style.width = '1100px';
+    container.style.maxWidth = '1000px';
+    container.style.width = '1000px';
     container.style.padding = '0';
     container.style.margin = '0';
   }}
@@ -2215,7 +2215,7 @@ async function generarPDF() {{
       margin: [10, 10, 12, 10],
       filename: 'otrs_report_' + fechaArchivo + '.pdf',
       image: {{ type: 'jpeg', quality: 0.95 }},
-      html2canvas: {{ scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false, scrollX: 0, scrollY: 0, width: 1100, windowWidth: 1100 }},
+      html2canvas: {{ scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false, scrollX: 0, scrollY: 0, x: 0, y: 0, width: 1000, windowWidth: 1000 }},
       jsPDF: {{ unit: 'mm', format: 'a4', orientation: 'landscape' }},
       pagebreak: {{ mode: ['css', 'legacy'], before: ['.pdf-pagebreak'], avoid: ['.stat-card', '.chart-container', '.timeline-charts', '.timeline-chart', '.ngram-list', '.resolution-block', 'tr', 'thead'] }},
     }}).save();
