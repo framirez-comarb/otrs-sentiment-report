@@ -200,7 +200,11 @@ class ReportGenerator:
 
         def stacked_bars(entries, label_fn, max_val):
             bars = ""
-            for entry in reversed(entries):
+            # `entries` already comes sorted DESC (newest first) from
+            # IntentClassifier.get_timeline_data. Render in that same order so
+            # the chart displays most recent → oldest top-down (matches the
+            # user's "ordena de manera descendente" request).
+            for entry in entries:
                 total = entry.get("total", 0)
                 pct_total = total / max_val * 100
                 c = entry.get("consulta", 0)
@@ -2064,8 +2068,8 @@ async function generarPDF() {{
   if (container) {{
     const o = {{ maxWidth: container.style.maxWidth, width: container.style.width, padding: container.style.padding, margin: container.style.margin }};
     restore.push(() => {{ Object.assign(container.style, o); }});
-    container.style.maxWidth = '1000px';
-    container.style.width = '1000px';
+    container.style.maxWidth = '1100px';
+    container.style.width = '1100px';
     container.style.padding = '0';
     container.style.margin = '0';
   }}
@@ -2081,14 +2085,52 @@ async function generarPDF() {{
     '*, *::before, *::after {{ animation: none !important; animation-delay: 0s !important; animation-duration: 0s !important; transition: none !important; opacity: 1 !important; transform: none !important; }}' +
     // The h1 uses -webkit-background-clip: text; html2canvas renders it as a gradient banner. Flatten.
     '.header h1 {{ background: none !important; -webkit-text-fill-color: #1a1d27 !important; color: #1a1d27 !important; }}' +
-    // Force one block per page so charts/tables never get cut between pages
-    '.section, .stats-grid {{ page-break-before: always !important; break-before: page !important; page-break-inside: avoid !important; break-inside: avoid !important; }}' +
-    // Keep the first stats-grid on page 1 with the header
-    '.tab-panel.active > .stats-grid:first-of-type, #tab-general > .stats-grid:first-of-type {{ page-break-before: avoid !important; break-before: avoid !important; }}' +
+    // Each section must not split across pages. We rely only on
+    // page-break-inside: avoid; forcing page-break-before: always creates
+    // ugly artifacts (title alone at page bottom) when content doesn't fit.
+    '.stats-grid {{ page-break-inside: avoid !important; break-inside: avoid !important; }}' +
+    // Force each .section to take a full A4 landscape page so titles never end up
+    // orphaned at the bottom of the previous page (html2pdf splits any section
+    // taller than one page; making sections at least one page tall + page-break-before
+    // = clean one-section-per-page layout regardless of inner content height).
     // Inner blocks: never split
     '.chart-container, .timeline-charts, .ngram-lists, .timeline-chart, .ngram-list, .resolution-block, .wordcloud-container {{ page-break-inside: avoid !important; break-inside: avoid !important; }}' +
     'tr, thead {{ page-break-inside: avoid !important; break-inside: avoid !important; }}' +
-    '.stat-card, .timeline-bar-wrap, .ngram-item {{ break-inside: avoid !important; }}'
+    '.stat-card, .timeline-bar-wrap, .ngram-item {{ break-inside: avoid !important; }}' +
+    // Compact timeline charts (cap max-height so the section fits one page)
+    '.timeline-bars {{ max-height: 600px !important; overflow: hidden !important; }}' +
+    '.timeline-bar-wrap {{ height: 18px !important; }}' +
+    '.timeline-bar {{ height: 14px !important; }}' +
+    '.timeline-label, .timeline-count {{ font-size: 0.65rem !important; }}' +
+    // Compact wordcloud (cap height + smaller ngram lists)
+    '.wordcloud-container img {{ max-height: 320px !important; width: auto !important; max-width: 100% !important; height: auto !important; }}' +
+    '.wordcloud-container {{ padding: 0.6rem !important; }}' +
+    '.ngram-lists {{ gap: 0.8rem !important; margin-top: 0.6rem !important; }}' +
+    '.ngram-list {{ padding: 0.6rem !important; }}' +
+    '.ngram-title {{ font-size: 0.85rem !important; margin-bottom: 0.4rem !important; }}' +
+    '.ngram-item {{ margin-bottom: 0.15rem !important; gap: 0.3rem !important; }}' +
+    '.ngram-rank, .ngram-term, .ngram-count {{ font-size: 0.7rem !important; }}' +
+    '.ngram-bar {{ height: 8px !important; }}' +
+    // Compact topic section table + donut so all 3 sub-blocks fit one page
+    '.topic-table {{ font-size: 0.7rem !important; }}' +
+    '.topic-table td, .topic-table th {{ padding: 0.25rem 0.4rem !important; line-height: 1.2 !important; }}' +
+    '.topic-overview {{ gap: 1rem !important; }}' +
+    '.topic-overview .donut-chart {{ width: 140px !important; height: 140px !important; flex-shrink: 0 !important; }}' +
+    '.topic-overview .donut-chart svg {{ width: 140px !important; height: 140px !important; }}' +
+    '.topic-overview .donut-center .big-num {{ font-size: 1.3rem !important; }}' +
+    '.topic-overview .donut-center .label {{ font-size: 0.65rem !important; }}' +
+    // Force grid items to shrink (otherwise long labels expand cards beyond 1fr)
+    '.stats-grid {{ grid-template-columns: repeat(4, 1fr) !important; gap: 0.7rem !important; }}' +
+    '.stat-card {{ min-width: 0 !important; padding: 1rem !important; }}' +
+    '.stat-card .stat-value {{ font-size: 1.9rem !important; }}' +
+    '.stat-card .stat-label {{ font-size: 0.7rem !important; }}' +
+    '.topic-overview {{ gap: 1rem !important; }}' +
+    '.topic-bar-wrap {{ height: 18px !important; margin-bottom: 0.15rem !important; }}' +
+    '.topic-bar {{ height: 14px !important; }}' +
+    '.topic-bar-label {{ font-size: 0.7rem !important; }}' +
+    // Smaller section padding
+    '.section, .chart-container, .timeline-chart, .ngram-list, .resolution-block, .wordcloud-container {{ padding: 0.8rem !important; }}' +
+    '.section-title {{ font-size: 1.05rem !important; padding-bottom: 0.3rem !important; margin-bottom: 0.6rem !important; }}'
   );
   document.head.appendChild(pdfStyle);
   restore.push(() => pdfStyle.remove());
@@ -2128,7 +2170,38 @@ async function generarPDF() {{
     section.style.display = 'none';
   }});
 
-  // 6. Re-render donut con colores del tema actual (claro)
+  // 6a-pre. Insert explicit empty break-divs before each .section. Both inline
+  //         page-break-before and html2pdf's `before:` option were unreliable
+  //         (orphan titles at page bottom). An empty div with page-break-after
+  //         is the most reliable trigger for html2pdf's slicer.
+  const insertedBreaks = [];
+  document.querySelectorAll('.section').forEach(el => {{
+    const breakDiv = document.createElement('div');
+    breakDiv.style.cssText = 'page-break-after: always; break-after: page; height: 1px; width: 100%;';
+    breakDiv.className = 'pdf-pagebreak';
+    el.parentNode.insertBefore(breakDiv, el);
+    insertedBreaks.push(breakDiv);
+  }});
+  restore.push(() => {{ insertedBreaks.forEach(d => d.remove()); }});
+
+  // 6a. Trim timeline-bars to the most recent N entries so each timeline card
+  //     fits on one A4 landscape page. CSS max-height + overflow hidden doesn't
+  //     help because html2canvas captures the full content.
+  document.querySelectorAll('.timeline-bars').forEach(bars => {{
+    const wraps = bars.querySelectorAll('.timeline-bar-wrap');
+    const N = 22; // ~22 rows fit comfortably under section title in one page
+    if (wraps.length > N) {{
+      const hide = wraps.length - N;
+      // Bars are sorted DESC (newest first) so hide the OLDEST = end of list
+      for (let i = wraps.length - hide; i < wraps.length; i++) {{
+        const o = wraps[i].style.display;
+        restore.push(() => {{ wraps[i].style.display = o; }});
+        wraps[i].style.display = 'none';
+      }}
+    }}
+  }});
+
+  // 6b. Re-render donut con colores del tema actual (claro)
   await new Promise(r => setTimeout(r, 100));
   if (typeof window.__redrawDonut === 'function') window.__redrawDonut();
 
@@ -2142,9 +2215,9 @@ async function generarPDF() {{
       margin: [10, 10, 12, 10],
       filename: 'otrs_report_' + fechaArchivo + '.pdf',
       image: {{ type: 'jpeg', quality: 0.95 }},
-      html2canvas: {{ scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false, scrollX: 0, scrollY: 0, width: 1000 }},
+      html2canvas: {{ scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false, scrollX: 0, scrollY: 0, width: 1100, windowWidth: 1100 }},
       jsPDF: {{ unit: 'mm', format: 'a4', orientation: 'landscape' }},
-      pagebreak: {{ mode: ['css', 'legacy'], avoid: ['.section', '.stat-card', '.chart-container', '.timeline-charts', '.timeline-chart', '.ngram-list', '.resolution-block', 'tr', 'thead'] }},
+      pagebreak: {{ mode: ['css', 'legacy'], before: ['.pdf-pagebreak'], avoid: ['.stat-card', '.chart-container', '.timeline-charts', '.timeline-chart', '.ngram-list', '.resolution-block', 'tr', 'thead'] }},
     }}).save();
   }} catch (err) {{
     console.error('Error al generar PDF', err);
