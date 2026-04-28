@@ -653,8 +653,32 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Clasificaci\u00f3n de Tickets por Intenci\u00f3n — OTRS</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,500;0,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/html2pdf.js@0.10.2/dist/html2pdf.bundle.min.js"></script>
 <style>
+  /* Tema CLARO (default) */
   :root {{
+    --bg-primary: #f5f6fa;
+    --bg-secondary: #ffffff;
+    --bg-card: #ffffff;
+    --bg-card-hover: #f0f2f7;
+    --text-primary: #1a1d27;
+    --text-secondary: #4b5563;
+    --text-muted: #6b7280;
+    --accent-teal: #0d9f6e;
+    --accent-orange: #d97706;
+    --accent-gray: #6b7280;
+    --accent-blue: #4f6ef0;
+    --border: #dfe3ec;
+    --radius: 12px;
+    --color-scheme: light;
+    --header-grad-from: #1a1d27;
+    --header-grad-to: #4f6ef0;
+    --inc-match-bg: rgba(124, 58, 237, 0.18);
+    --inc-match-fg: #6d28d9;
+  }}
+
+  /* Tema OSCURO */
+  [data-theme="dark"] {{
     --bg-primary: #0f0f1a;
     --bg-secondary: #1a1a2e;
     --bg-card: #16213e;
@@ -667,8 +691,14 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
     --accent-gray: #636e72;
     --accent-blue: #3b82f6;
     --border: #1e293b;
-    --radius: 12px;
+    --color-scheme: dark;
+    --header-grad-from: #e2e8f0;
+    --header-grad-to: #94a3b8;
+    --inc-match-bg: rgba(168, 85, 247, 0.25);
+    --inc-match-fg: #d8b4fe;
   }}
+
+  html {{ color-scheme: var(--color-scheme); }}
 
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
 
@@ -684,6 +714,42 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
     max-width: 1400px;
     margin: 0 auto;
     padding: 2rem 1.5rem;
+  }}
+
+  /* ── Header actions (theme toggle + PDF) ── */
+  .header-actions {{
+    position: absolute;
+    top: 1rem;
+    right: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    align-items: flex-end;
+    z-index: 10;
+  }}
+  .theme-toggle {{
+    background: var(--bg-card);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.5rem 0.9rem;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.85rem;
+    font-weight: 500;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    transition: background 0.2s, color 0.2s, border-color 0.2s;
+    white-space: nowrap;
+  }}
+  .theme-toggle:hover {{
+    color: var(--accent-blue);
+    border-color: var(--accent-blue);
+  }}
+  .theme-toggle .theme-icon {{ font-size: 1rem; }}
+  @media (max-width: 768px) {{
+    .header-actions {{ position: static; flex-direction: row; justify-content: center; margin-bottom: 1rem; }}
   }}
 
   /* ── Header ── */
@@ -708,7 +774,7 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
     font-weight: 700;
     letter-spacing: -0.03em;
     margin-bottom: 0.5rem;
-    background: linear-gradient(135deg, #e2e8f0, #94a3b8);
+    background: linear-gradient(135deg, var(--header-grad-from), var(--header-grad-to));
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
   }}
@@ -1597,11 +1663,11 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
   }}
 
   mark.inc-match {{
-    background: rgba(168, 85, 247, 0.25);
-    color: #d8b4fe;
+    background: var(--inc-match-bg);
+    color: var(--inc-match-fg);
     padding: 0.05rem 0.3rem;
     border-radius: 3px;
-    font-weight: 500;
+    font-weight: 600;
   }}
 
   .resolution-badge {{
@@ -1627,6 +1693,12 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
 
   <!-- Header -->
   <header class="header">
+    <div class="header-actions">
+      <button id="pdf-download" class="theme-toggle" type="button" aria-label="Descargar PDF" title="Descargar PDF (KPIs y gráficos)">
+        <span class="theme-icon">&#x1F4C4;</span> Descargar PDF
+      </button>
+      <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Cambiar tema" title="Cambiar tema"></button>
+    </div>
     <h1>Clasificaci\u00f3n de Tickets por Intenci\u00f3n — OTRS</h1>
     <p class="subtitle">Reporte autom\u00e1tico generado el {generated_at}</p>
     <div class="meta-bar">
@@ -1821,8 +1893,8 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
 </div>
 
 <script>
-// ── Donut chart animation ──
-(function() {{
+// ── Donut chart animation (named so the theme toggle can re-trigger it) ──
+window.__redrawDonut = function() {{
   const total = {total} || 1;
   const consulta = {chart_consulta};
   const reclamo = {chart_reclamo};
@@ -1847,7 +1919,8 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
     arcIndeterminado.setAttribute('stroke-dasharray', indeterminadoLen + ' ' + C);
     arcIndeterminado.setAttribute('stroke-dashoffset', -(consultaLen + reclamoLen));
   }}
-}})();
+}};
+window.__redrawDonut();
 
 // ── Tab switching ──
 function switchTab(ev, name) {{
@@ -1920,6 +1993,158 @@ function expandAll(tabName, expand) {{
     else h.classList.remove('expanded');
   }});
 }}
+
+/* ── TOGGLE DE TEMA (claro / oscuro) ── */
+const THEME_KEY = 'otrs_report_theme';
+const themeBtn = document.getElementById('theme-toggle');
+
+function applyTheme(theme) {{
+  const t = (theme === 'dark') ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', t);
+  if (themeBtn) {{
+    themeBtn.innerHTML = (t === 'dark')
+      ? '<span class="theme-icon">☀️</span> Modo claro'
+      : '<span class="theme-icon">🌙</span> Modo oscuro';
+    themeBtn.title = (t === 'dark') ? 'Cambiar a tema claro' : 'Cambiar a tema oscuro';
+  }}
+  try {{ localStorage.setItem(THEME_KEY, t); }} catch (_) {{}}
+  // Re-trigger donut animation so colors take effect (its arcs read CSS vars on render)
+  if (typeof window.__redrawDonut === 'function') window.__redrawDonut();
+}}
+
+let savedTheme = 'light';
+try {{ savedTheme = localStorage.getItem(THEME_KEY) || 'light'; }} catch (_) {{}}
+applyTheme(savedTheme);
+
+if (themeBtn) {{
+  themeBtn.addEventListener('click', () => {{
+    const current = document.documentElement.getAttribute('data-theme') || 'light';
+    applyTheme(current === 'dark' ? 'light' : 'dark');
+  }});
+}}
+
+/* ── DESCARGA DE PDF (vía html2pdf.js) ──
+   Approach: forzar tema claro, mostrar todas las pestañas, ocultar UI no
+   relevante (filtros, listados largos de tickets), rasterizar el container
+   completo. Overlay tapa el layout shift mientras se genera. */
+const pdfBtn = document.getElementById('pdf-download');
+if (pdfBtn) {{
+  pdfBtn.addEventListener('click', () => {{
+    if (typeof html2pdf === 'undefined') {{
+      alert('html2pdf.js no cargó. Revisá tu conexión a internet.');
+      return;
+    }}
+    generarPDF();
+  }});
+}}
+
+async function generarPDF() {{
+  const labelOriginal = pdfBtn.innerHTML;
+  pdfBtn.disabled = true;
+  pdfBtn.innerHTML = '<span class="theme-icon">⏳</span> Generando…';
+
+  // Overlay
+  const overlay = document.createElement('div');
+  overlay.style.cssText = (
+    'position:fixed; inset:0; background:rgba(15,17,23,0.85); ' +
+    'z-index:99999; display:flex; align-items:center; justify-content:center; ' +
+    'color:white; font-family:DM Sans,sans-serif; font-size:1.1rem;'
+  );
+  overlay.innerHTML = '<div style="text-align:center"><div style="font-size:2rem;margin-bottom:.5rem">📄</div>Generando PDF…</div>';
+  document.body.appendChild(overlay);
+
+  // Forzar tema claro
+  const prevTheme = document.documentElement.getAttribute('data-theme') || 'light';
+  if (prevTheme !== 'light') document.documentElement.setAttribute('data-theme', 'light');
+
+  const restore = [];
+
+  // 1. Container a 1000px
+  const container = document.querySelector('.container');
+  if (container) {{
+    const o = {{ maxWidth: container.style.maxWidth, width: container.style.width, padding: container.style.padding, margin: container.style.margin }};
+    restore.push(() => {{ Object.assign(container.style, o); }});
+    container.style.maxWidth = '1000px';
+    container.style.width = '1000px';
+    container.style.padding = '0';
+    container.style.margin = '0';
+  }}
+  const obp = document.body.style.padding;
+  restore.push(() => {{ document.body.style.padding = obp; }});
+  document.body.style.padding = '0';
+
+  // 2. CSS injection: page-break rules + compact tables
+  const pdfStyle = document.createElement('style');
+  pdfStyle.id = 'pdf-page-break-rules';
+  pdfStyle.textContent = (
+    '.section, .stats-grid, .chart-container, .timeline-charts, .ngram-lists, .timeline-chart, .ngram-list, .resolution-block {{ page-break-inside: avoid !important; break-inside: avoid !important; }}' +
+    'tr, thead {{ page-break-inside: avoid !important; break-inside: avoid !important; }}' +
+    '.stat-card, .timeline-bar-wrap, .ngram-item {{ break-inside: avoid !important; }}'
+  );
+  document.head.appendChild(pdfStyle);
+  restore.push(() => pdfStyle.remove());
+
+  // 3. Mostrar AMBAS pestañas (general + incógnito) consecutivas
+  document.querySelectorAll('.tab-panel').forEach(p => {{
+    const o = p.style.display;
+    restore.push(() => {{ p.style.display = o; }});
+    p.style.display = 'block';
+  }});
+
+  // 4. Ocultar UI no relevante: tabs nav, filtros, listados densos, footer
+  const hide = [
+    '.tabs',
+    '.table-controls',
+    '#tickets-body',
+    '#incognito-tickets-body',
+    '#pdf-download',
+    '#theme-toggle',
+    '.container > footer', 'body > footer',
+  ];
+  hide.forEach(sel => document.querySelectorAll(sel).forEach(el => {{
+    const o = el.style.display;
+    restore.push(() => {{ el.style.display = o; }});
+    el.style.display = 'none';
+  }}));
+
+  // 5. Ocultar el card .table-container vacío tras esconder su contenido
+  document.querySelectorAll('.table-container').forEach(el => {{
+    const o = el.style.display;
+    restore.push(() => {{ el.style.display = o; }});
+    el.style.display = 'none';
+  }});
+
+  // 6. Re-render donut con colores del tema actual (claro)
+  await new Promise(r => setTimeout(r, 100));
+  if (typeof window.__redrawDonut === 'function') window.__redrawDonut();
+
+  // 7. Esperar que el browser layout-render
+  await new Promise(r => setTimeout(r, 500));
+
+  try {{
+    const target = document.querySelector('.container') || document.body;
+    const fechaArchivo = new Date().toISOString().slice(0, 10);
+    await html2pdf().from(target).set({{
+      margin: [10, 10, 12, 10],
+      filename: 'otrs_report_' + fechaArchivo + '.pdf',
+      image: {{ type: 'jpeg', quality: 0.95 }},
+      html2canvas: {{ scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false, scrollX: 0, scrollY: 0, width: 1000 }},
+      jsPDF: {{ unit: 'mm', format: 'a4', orientation: 'landscape' }},
+      pagebreak: {{ mode: ['css', 'legacy'], avoid: ['.section', '.stat-card', '.chart-container', '.timeline-charts', '.timeline-chart', '.ngram-list', '.resolution-block', 'tr', 'thead'] }},
+    }}).save();
+  }} catch (err) {{
+    console.error('Error al generar PDF', err);
+    alert('Error al generar PDF: ' + (err && err.message ? err.message : err));
+  }} finally {{
+    restore.reverse().forEach(fn => {{ try {{ fn(); }} catch (_) {{}} }});
+    if (prevTheme !== 'light') document.documentElement.setAttribute('data-theme', prevTheme);
+    if (typeof window.__redrawDonut === 'function') window.__redrawDonut();
+    overlay.remove();
+    pdfBtn.disabled = false;
+    pdfBtn.innerHTML = labelOriginal;
+  }}
+}}
+
 </script>
 
 </body>
