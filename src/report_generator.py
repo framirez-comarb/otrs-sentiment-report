@@ -365,9 +365,9 @@ class ReportGenerator:
             offset += arc_len
 
         return (
+            # \u2500\u2500 Section 1: Donut + Table (clasificaci\u00f3n tem\u00e1tica) \u2500\u2500
             '<div class="section">'
             '<h2 class="section-title">Clasificaci\u00f3n Tem\u00e1tica</h2>'
-            # Row 1: Donut + Table side by side
             '<div class="topic-overview">'
             '<div class="donut-chart">'
             '<svg viewBox="0 0 220 220" width="220" height="220" style="transform:rotate(-90deg)">'
@@ -386,7 +386,10 @@ class ReportGenerator:
             '<tbody>%s</tbody>'
             '</table></div>'
             '</div>'  # close topic-overview
-            # Row 2: Bar chart full width
+            '</div>'  # close section 1
+            # \u2500\u2500 Section 2: Bar chart (Distribuci\u00f3n Consulta/Reclamo por tema) \u2500\u2500
+            '<div class="section">'
+            '<h2 class="section-title">Distribuci\u00f3n por Tema (Consulta vs Reclamo)</h2>'
             '<div class="topic-bars-box">'
             '<div class="stacked-legend">'
             '<span class="stacked-legend-item"><span class="stacked-dot" style="background:var(--accent-teal)"></span>Consulta</span>'
@@ -395,7 +398,7 @@ class ReportGenerator:
             '</div>'
             '%s'
             '</div>'
-            '</div>'  # close section
+            '</div>'  # close section 2
             % (donut_arcs, total_classified, table_rows, bars_html)
         )
 
@@ -496,7 +499,8 @@ class ReportGenerator:
         )
 
     def _build_incognito_timeline_chart(self, timeline_data):
-        """Monthly (left) + daily (right) timeline, stacked responsive."""
+        """Monthly (left) + daily (right) timeline charts side-by-side in a single
+        .timeline-charts grid (so they share one PDF page)."""
         by_day = timeline_data.get("by_day", [])
         by_month = timeline_data.get("by_month", [])
 
@@ -548,11 +552,14 @@ class ReportGenerator:
             '<div class="timeline-charts">'
             '<div class="timeline-chart">'
             '<h3 class="timeline-title">Por mes</h3>'
-            '<div class="timeline-bars">%s</div></div>'
+            '<div class="timeline-bars">%s</div>'
+            '</div>'
             '<div class="timeline-chart">'
             '<h3 class="timeline-title">Por día</h3>'
-            '<div class="timeline-bars">%s</div></div>'
-            '</div>' % (month_bars, day_bars)
+            '<div class="timeline-bars">%s</div>'
+            '</div>'
+            '</div>'
+            % (month_bars, day_bars)
         )
 
     def _build_incognito_ticket_rows(self, tickets):
@@ -658,6 +665,10 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
 <title>Clasificaci\u00f3n de Tickets por Intenci\u00f3n — OTRS</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,500;0,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/html2pdf.js@0.10.2/dist/html2pdf.bundle.min.js"></script>
+<!-- html2pdf bundles html2canvas+jsPDF internally pero no los re-exporta; los cargamos
+     standalone para usarlos directo desde generarPDF() (captura por sección). -->
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 <style>
   /* Tema CLARO (default) */
   :root {{
@@ -1835,6 +1846,11 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
     <div class="wordcloud-container">
       <img src="data:image/png;base64,{wordcloud_b64}" alt="Nube de palabras">
     </div>
+  </div>
+
+  <!-- N-gram lists (separate section so it gets its own page in PDF) -->
+  <div class="section">
+    <h2 class="section-title">Términos más Frecuentes</h2>
     {ngram_lists}
   </div>
 
@@ -1862,10 +1878,11 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
   <!-- Tab panel: Incognito -->
   <div id="tab-incognito" class="tab-panel">
 
-    {incognito_kpi_cards}
-
+    <!-- KPIs + Tiempo de resoluci\u00f3n unidos en una misma section para PDF -->
     <div class="section">
-      <h2 class="section-title">Tiempo de resoluci\u00f3n</h2>
+      <h2 class="section-title" id="pdf-modo-incognito-title">Modo Inc\u00f3gnito</h2>
+      {incognito_kpi_cards}
+      <h2 class="section-title" style="margin-top:1.5rem">Tiempo de resoluci\u00f3n</h2>
       {incognito_resolution_block}
     </div>
 
@@ -2027,15 +2044,16 @@ if (themeBtn) {{
   }});
 }}
 
-/* ── DESCARGA DE PDF (vía html2pdf.js) ──
+/* ── DESCARGA DE PDF (html2canvas + jsPDF directo) ──
    Approach: forzar tema claro, mostrar todas las pestañas, ocultar UI no
-   relevante (filtros, listados largos de tickets), rasterizar el container
-   completo. Overlay tapa el layout shift mientras se genera. */
+   relevante, capturar cada .section como una imagen independiente y armar el
+   PDF con jsPDF, una sección por página A4-landscape centrada. Evita el
+   slicing de canvas de html2pdf que produce whitespace al borde de página. */
 const pdfBtn = document.getElementById('pdf-download');
 if (pdfBtn) {{
   pdfBtn.addEventListener('click', () => {{
-    if (typeof html2pdf === 'undefined') {{
-      alert('html2pdf.js no cargó. Revisá tu conexión a internet.');
+    if (typeof html2canvas === 'undefined' || (typeof window.jspdf === 'undefined' && typeof window.jsPDF === 'undefined')) {{
+      alert('html2canvas / jsPDF no cargaron. Revisá tu conexión a internet.');
       return;
     }}
     generarPDF();
@@ -2082,13 +2100,20 @@ async function generarPDF() {{
   pdfStyle.id = 'pdf-page-break-rules';
   pdfStyle.textContent = (
     // Disable animations/transitions: html2canvas catches mid-fadeIn and content looks washed out
-    '*, *::before, *::after {{ animation: none !important; animation-delay: 0s !important; animation-duration: 0s !important; transition: none !important; opacity: 1 !important; transform: none !important; }}' +
+    '*, *::before, *::after {{ animation: none !important; animation-delay: 0s !important; animation-duration: 0s !important; transition: none !important; opacity: 1 !important; }}' +
+    // Disable the donut SVG rotation (-90deg) which html2canvas can't render correctly with stroke-dasharray
+    '.donut-chart svg, .topic-overview svg {{ transform: none !important; }}' +
     // The h1 uses -webkit-background-clip: text; html2canvas renders it as a gradient banner. Flatten.
     '.header h1 {{ background: none !important; -webkit-text-fill-color: #1a1d27 !important; color: #1a1d27 !important; }}' +
     // Each section must not split across pages. We rely only on
     // page-break-inside: avoid; forcing page-break-before: always creates
     // ugly artifacts (title alone at page bottom) when content doesn't fit.
-    '.stats-grid {{ page-break-inside: avoid !important; break-inside: avoid !important; }}' +
+    '.section, .stats-grid {{ page-break-inside: avoid !important; break-inside: avoid !important; margin: 0 !important; }}' +
+    // Force each .section onto its own page (except the first stats-grid that
+    // shares page 1 with the header).
+    '.section {{ page-break-before: always !important; break-before: page !important; }}' +
+    // The very first .section (Distribución por Intención) sits on page 2;
+    // explicitly avoid break before it would still put it on page 2 anyway.
     // Force each .section to take a full A4 landscape page so titles never end up
     // orphaned at the bottom of the previous page (html2pdf splits any section
     // taller than one page; making sections at least one page tall + page-break-before
@@ -2130,7 +2155,14 @@ async function generarPDF() {{
     '.topic-bar-label {{ font-size: 0.7rem !important; }}' +
     // Smaller section padding
     '.section, .chart-container, .timeline-chart, .ngram-list, .resolution-block, .wordcloud-container {{ padding: 0.8rem !important; }}' +
-    '.section-title {{ font-size: 1.05rem !important; padding-bottom: 0.3rem !important; margin-bottom: 0.6rem !important; }}'
+    '.section-title {{ font-size: 1.05rem !important; padding-bottom: 0.3rem !important; margin-bottom: 0.6rem !important; }}' +
+    // Reduce timeline-chart card padding so daily/monthly charts stick close to the top
+    '.timeline-chart {{ padding: 0.4rem !important; }}' +
+    '.timeline-chart .timeline-bars {{ padding-top: 0 !important; padding-bottom: 0 !important; }}' +
+    // Tighten incognito KPI grid so KPIs+resolution share top of page
+    '.tab-panel#tab-incognito .stats-grid {{ margin: 0 !important; }}' +
+    // Page 8 hero title: bigger + centered (just below the main h1 size)
+    '#pdf-modo-incognito-title {{ font-size: 1.8rem !important; text-align: center !important; border-bottom: none !important; padding-bottom: 0 !important; margin-bottom: 1.2rem !important; letter-spacing: -0.02em !important; }}'
   );
   document.head.appendChild(pdfStyle);
   restore.push(() => pdfStyle.remove());
@@ -2158,38 +2190,26 @@ async function generarPDF() {{
     el.style.display = 'none';
   }}));
 
-  // 5. Ocultar la SECTION entera que envuelve los listados de tickets
-  //    (sino queda el título "Detalle por Ticket" / "Listado de tickets" huérfano).
+  // 5. Remover completamente del DOM las sections con listados de tickets
+  //    (display:none no alcanza: html2pdf igual respeta el page-break-before y
+  //    crea una página blanca por cada section hidden).
   ['#tickets-body', '#incognito-tickets-body'].forEach(sel => {{
     const body = document.querySelector(sel);
     if (!body) return;
     const section = body.closest('.section');
     if (!section) return;
-    const o = section.style.display;
-    restore.push(() => {{ section.style.display = o; }});
-    section.style.display = 'none';
+    const placeholder = document.createComment('hidden-section-pdf');
+    section.parentNode.replaceChild(placeholder, section);
+    restore.push(() => {{ placeholder.parentNode.replaceChild(section, placeholder); }});
   }});
 
-  // 6a-pre. Insert explicit empty break-divs before each .section. Both inline
-  //         page-break-before and html2pdf's `before:` option were unreliable
-  //         (orphan titles at page bottom). An empty div with page-break-after
-  //         is the most reliable trigger for html2pdf's slicer.
-  const insertedBreaks = [];
-  document.querySelectorAll('.section').forEach(el => {{
-    const breakDiv = document.createElement('div');
-    breakDiv.style.cssText = 'page-break-after: always; break-after: page; height: 1px; width: 100%;';
-    breakDiv.className = 'pdf-pagebreak';
-    el.parentNode.insertBefore(breakDiv, el);
-    insertedBreaks.push(breakDiv);
-  }});
-  restore.push(() => {{ insertedBreaks.forEach(d => d.remove()); }});
 
   // 6a. Trim timeline-bars to the most recent N entries so each timeline card
   //     fits on one A4 landscape page. CSS max-height + overflow hidden doesn't
   //     help because html2canvas captures the full content.
   document.querySelectorAll('.timeline-bars').forEach(bars => {{
     const wraps = bars.querySelectorAll('.timeline-bar-wrap');
-    const N = 22; // ~22 rows fit comfortably under section title in one page
+    const N = 22; // bump from 13: per-section capture scales the image to fit so we can fit more rows before the height becomes the limiting dimension
     if (wraps.length > N) {{
       const hide = wraps.length - N;
       // Bars are sorted DESC (newest first) so hide the OLDEST = end of list
@@ -2208,21 +2228,68 @@ async function generarPDF() {{
   // 7. Esperar que el browser layout-render
   await new Promise(r => setTimeout(r, 500));
 
+  // Per-section capture: avoid html2pdf's canvas-slicing artifacts (orphan whitespace
+  // at top/bottom of pages where sections don't fill the A4 area). Each .section is
+  // captured as one image and centered on its own A4-landscape page.
+  const tempWrappers = [];
   try {{
-    const target = document.querySelector('.container') || document.body;
+    const headerEl = document.querySelector('header.header');
+    const firstStatsGrid = document.querySelector('#tab-general .stats-grid')
+      || document.querySelector('.stats-grid');
+
+    const createTempWrapper = (elements) => {{
+      const wrapper = document.createElement('div');
+      wrapper.style.cssText = (
+        'position:absolute; left:-99999px; top:0; width:1000px; ' +
+        'background:#ffffff; padding:0; margin:0;'
+      );
+      elements.forEach(el => {{ if (el) wrapper.appendChild(el.cloneNode(true)); }});
+      document.body.appendChild(wrapper);
+      tempWrappers.push(wrapper);
+      return wrapper;
+    }};
+
+    const pageGroups = [];
+    if (headerEl || firstStatsGrid) {{
+      pageGroups.push({{ wrapper: createTempWrapper([headerEl, firstStatsGrid]) }});
+    }}
+    document.querySelectorAll('.section').forEach(s => {{ pageGroups.push({{ el: s }}); }});
+
+    const jsPDFCtor = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
+    const pdf = new jsPDFCtor({{ unit: 'mm', format: 'a4', orientation: 'landscape' }});
+    const pageW = 297, pageH = 210;
+    const margin = 10;
+    const usableW = pageW - 2 * margin; // 277mm
+    const usableH = pageH - 2 * margin; // 190mm
+
+    for (let i = 0; i < pageGroups.length; i++) {{
+      const target = pageGroups[i].wrapper || pageGroups[i].el;
+      const canvas = await html2canvas(target, {{
+        scale: 2, useCORS: true, backgroundColor: '#ffffff',
+        logging: false, scrollX: 0, scrollY: 0,
+        windowWidth: 1000, width: 1000,
+      }});
+      const imgData = canvas.toDataURL('image/jpeg', 0.95);
+      const imgRatio = canvas.width / canvas.height;
+      let imgW_mm = usableW;
+      let imgH_mm = imgW_mm / imgRatio;
+      if (imgH_mm > usableH) {{
+        imgH_mm = usableH;
+        imgW_mm = imgH_mm * imgRatio;
+      }}
+      const x_mm = (pageW - imgW_mm) / 2;
+      const y_mm = (pageH - imgH_mm) / 2;
+      if (i > 0) pdf.addPage();
+      pdf.addImage(imgData, 'JPEG', x_mm, y_mm, imgW_mm, imgH_mm);
+    }}
+
     const fechaArchivo = new Date().toISOString().slice(0, 10);
-    await html2pdf().from(target).set({{
-      margin: [10, 10, 12, 10],
-      filename: 'otrs_report_' + fechaArchivo + '.pdf',
-      image: {{ type: 'jpeg', quality: 0.95 }},
-      html2canvas: {{ scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false, scrollX: 0, scrollY: 0, x: 0, y: 0, width: 1000, windowWidth: 1000 }},
-      jsPDF: {{ unit: 'mm', format: 'a4', orientation: 'landscape' }},
-      pagebreak: {{ mode: ['css', 'legacy'], before: ['.pdf-pagebreak'], avoid: ['.stat-card', '.chart-container', '.timeline-charts', '.timeline-chart', '.ngram-list', '.resolution-block', 'tr', 'thead'] }},
-    }}).save();
+    pdf.save('otrs_report_' + fechaArchivo + '.pdf');
   }} catch (err) {{
     console.error('Error al generar PDF', err);
     alert('Error al generar PDF: ' + (err && err.message ? err.message : err));
   }} finally {{
+    tempWrappers.forEach(w => {{ try {{ w.remove(); }} catch (_) {{}} }});
     restore.reverse().forEach(fn => {{ try {{ fn(); }} catch (_) {{}} }});
     if (prevTheme !== 'light') document.documentElement.setAttribute('data-theme', prevTheme);
     if (typeof window.__redrawDonut === 'function') window.__redrawDonut();
