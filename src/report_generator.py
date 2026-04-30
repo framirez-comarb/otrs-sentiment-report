@@ -70,7 +70,6 @@ class ReportGenerator:
 
         html = REPORT_TEMPLATE.format(
             generated_at=generated_at.strftime("%d/%m/%Y %H:%M"),
-            fulltext=search_params.get("fulltext", ""),
             queues=", ".join(search_params.get("queues", [])),
             date_from=search_params.get("date_from", ""),
             date_to=search_params.get("date_to", ""),
@@ -1717,7 +1716,6 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
     <h1>Clasificaci\u00f3n de Tickets por Intenci\u00f3n — OTRS</h1>
     <p class="subtitle">Reporte autom\u00e1tico generado el {generated_at}</p>
     <div class="meta-bar">
-      <span class="meta-item">B\u00fasqueda: <strong>{fulltext}</strong></span>
       <span class="meta-item">Colas: <strong>{queues}</strong></span>
       <span class="meta-item">Per\u00edodo: <strong>{date_from} \u2192 {date_to}</strong></span>
     </div>
